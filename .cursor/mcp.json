@@ -1,0 +1,7 @@
+{
+  "mcpServers": {
+    "borsa-istanbul-stocks": {
+      "url": "http://localhost:8081/mcp"
+    }
+  }
+}

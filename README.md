@@ -5,7 +5,7 @@ Ask a question about a Borsa Istanbul stock in plain language, in Turkish or Eng
 The project has two Spring Boot applications:
 
 - **`spring-boot-ai-stock-mcp-server`** is an [MCP](https://modelcontextprotocol.io) server. It offers three tools, `findSymbol`, `getQuote` and `getHistory`, over Streamable HTTP. It fetches the data from TradingView and Yahoo Finance.
-- **`spring-boot-ai-stock-agent`** is a REST API. It passes the question to an LLM (OpenAI or Anthropic) through Spring AI's `ChatClient`, together with the server's tools. The model decides which tools to call and writes the answer. The API returns the answer and the tool data as JSON.
+- **`spring-boot-ai-stock-agent`** is a REST API. Its endpoint, `POST /api/stocks/ask`, takes a natural-language sentence as input, such as "Aselsan hissesi şu an kaç TL?", and redirects the request to `spring-boot-ai-stock-mcp-server`. It does this through an LLM (OpenAI or Anthropic) and Spring AI's `ChatClient`: the model reads the sentence, decides which of the server's tools to call, and the agent forwards those calls to the server over MCP. The model then writes the answer, and the API returns it together with the tool data as JSON.
 
 ```mermaid
 flowchart LR
@@ -94,6 +94,8 @@ The MCP endpoint has no authentication, so the server listens on `127.0.0.1` onl
 The agent's API is described at `http://localhost:8080/swagger-ui.html`.
 
 ## Example
+
+The request body has a single field, `question`, which holds a plain sentence rather than a ticker or a tool name. The agent turns it into tool calls on `spring-boot-ai-stock-mcp-server`; in this example, `findSymbol` and then `getQuote`.
 
 ```bash
 curl -X POST http://localhost:8080/api/stocks/ask \

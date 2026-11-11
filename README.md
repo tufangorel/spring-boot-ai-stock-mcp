@@ -4,7 +4,7 @@ Ask a question about a Borsa Istanbul stock in plain language, in Turkish or Eng
 
 The project has two Spring Boot applications:
 
-- **`spring-boot-ai-stock-mcp-server`** is an [MCP](https://modelcontextprotocol.io) server. It offers three tools, `findSymbol`, `getQuote` and `getHistory`, over Streamable HTTP. It fetches the data from TradingView and Yahoo Finance.
+- **`spring-boot-ai-stock-mcp-server`** is an [MCP](https://modelcontextprotocol.io) server. It offers three tools, `findSymbol`, `getQuote` and `getHistory`, over Streamable HTTP. It fetches the data from TradingView and Yahoo Finance. It records every tool call with its arguments and result as a trace span, a log line and a timer, and can send the traces to Jaeger with OpenTelemetry (see [Observability](#observability)).
 - **`spring-boot-ai-stock-agent`** is a REST API. Its endpoint, `POST /api/stocks/ask`, takes a natural-language sentence as input, such as "Aselsan hissesi şu an kaç TL?", and redirects the request to `spring-boot-ai-stock-mcp-server`. It does this through an LLM (OpenAI or Anthropic) and Spring AI's `ChatClient`: the model reads the sentence, decides which of the server's tools to call, and the agent forwards those calls to the server over MCP. The model then writes the answer, and the API returns it together with the tool data as JSON.
 
 ```mermaid
@@ -19,12 +19,17 @@ flowchart LR
     Recorder -->|"MCP Streamable HTTP /mcp"| Tools
     subgraph serverModule [spring-boot-ai-stock-mcp-server port 8081]
         Tools["StockTools McpTool"]
+        Observer["ToolCallObserver span, log line and timer"]
         Routing["QuoteService cache and fallback"]
-        Tools --> Routing
+        Tools --> Observer
+        Observer --> Routing
     end
     Routing --> TV["TradingView scanner"]
     Routing --> YF["Yahoo chart"]
+    Observer -.->|"OTLP traces with the otel profile"| Jaeger["Jaeger UI port 16686"]
 ```
+
+The dashed arrow is optional: the server sends its traces to Jaeger only when it runs with the `otel` profile.
 
 ## Why MCP
 
@@ -208,6 +213,36 @@ The MCP server records every tool call, so you can see what a client asked for a
 
 The log line and the timer are always on. Spans leave the application only when it runs with the `otel` profile, which sends them over OTLP to `http://localhost:4318/v1/traces`.
 
+### The `otel` profile
+
+`otel` is a Spring profile of the MCP server. It is defined by [`application-otel.properties`](spring-boot-ai-stock-mcp-server/src/main/resources/application-otel.properties), which Spring Boot reads only when the profile is active. The file holds one setting, the address the traces are sent to:
+
+```properties
+management.opentelemetry.tracing.export.otlp.endpoint=http://localhost:4318/v1/traces
+```
+
+| | Without the profile | With the profile |
+|---|---|---|
+| Log line per tool call | yes | yes |
+| `mcp.tool.call` timer | yes | yes |
+| Traces sent to Jaeger | no | yes |
+
+There are two ways to turn it on:
+
+- Set the environment variable `SPRING_PROFILES_ACTIVE=otel` before starting the server, as in step 2 below.
+- Pass `--spring.profiles.active=otel` when running the jar:
+
+  ```bash
+  ./mvnw -pl spring-boot-ai-stock-mcp-server package
+  java -jar spring-boot-ai-stock-mcp-server/target/spring-boot-ai-stock-mcp-server-0.0.1-SNAPSHOT.jar --spring.profiles.active=otel
+  ```
+
+When the profile is on, the server logs `The following 1 profile is active: "otel"` at startup. The agent has no `otel` profile, so setting it there changes nothing.
+
+### How the server and Jaeger connect
+
+The server has no Jaeger-specific code or dependency. It creates the spans with Spring Boot's OpenTelemetry starter and, when the `otel` profile is on, sends them in batches over OTLP/HTTP, the standard OpenTelemetry protocol, to `http://localhost:4318/v1/traces`. Jaeger listens for OTLP on port 4318 and shows what it receives in its UI on port 16686, under the service name taken from `spring.application.name`. The connection goes one way, from the server to Jaeger, and a batch is sent every 5 seconds, so a trace appears a few seconds after the tool call. Any other backend that accepts OTLP can take Jaeger's place.
+
 ### Viewing the traces in Jaeger
 
 [Jaeger](https://www.jaegertracing.io) is a single program that receives the traces and shows them in a browser. It needs no Docker.
@@ -223,6 +258,10 @@ The log line and the timer are always on. Spans leave the application only when 
    On Windows, set it with `$env:SPRING_PROFILES_ACTIVE="otel"`.
 3. Call a tool, by asking the agent a question or from Cursor.
 4. Open `http://localhost:16686`, choose the service `spring-boot-ai-stock-mcp-server` and select Find Traces. A tool call is a trace named `http post /mcp` that contains a `tools/call` span. Select that span: the GenAI tab shows the arguments and the result, and the Details tab shows every attribute.
+
+This is a `findSymbol` call in Jaeger. The `POST /mcp` request is the first span and `tools/call findSymbol` is the second, opened to show its arguments and its result. The request to TradingView is the third span, below the open panel.
+
+![A findSymbol tool call in the Jaeger UI, with its arguments and result](docs/jaeger-tool-call-trace.png)
 
 Things to know:
 

@@ -6,6 +6,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 
+import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.core.instrument.Timer;
 import io.modelcontextprotocol.client.McpClient;
 import io.modelcontextprotocol.client.McpSyncClient;
 import io.modelcontextprotocol.client.transport.HttpClientStreamableHttpTransport;
@@ -22,10 +24,14 @@ import org.example.stock.mcp.provider.YahooClient;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
 import org.springframework.ai.mcp.SyncMcpToolCallbackProvider;
 import org.springframework.ai.tool.ToolCallback;
 import org.springframework.ai.tool.execution.ToolExecutionException;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.boot.test.system.CapturedOutput;
+import org.springframework.boot.test.system.OutputCaptureExtension;
 import org.springframework.boot.test.web.server.LocalServerPort;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 
@@ -38,6 +44,7 @@ import static org.mockito.BDDMockito.given;
 /** Starts the server and talks to it the way the agent and Cursor do: as an MCP client over Streamable HTTP. */
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT,
 		properties = "spring.ai.mcp.client.enabled=false")
+@ExtendWith(OutputCaptureExtension.class)
 class StockToolsMcpTests {
 
 	static final Quote ASELS = new Quote("ASELS", "Aselsan Elektronik Sanayi ve Ticaret A.S. Class B", 330.75, "TRY",
@@ -52,6 +59,9 @@ class StockToolsMcpTests {
 
 	@MockitoBean
 	private YahooClient yahoo;
+
+	@Autowired
+	private MeterRegistry meterRegistry;
 
 	private McpSyncClient client;
 
@@ -153,6 +163,39 @@ class StockToolsMcpTests {
 		assertThatThrownBy(() -> getHistory.call("{\"symbol\":\"ASELS\",\"range\":\"2d\"}"))
 				.isInstanceOf(ToolExecutionException.class)
 				.hasMessageStartingWith("Error calling tool: [TextContent[annotations=null, text=Range \"2d\" is not supported");
+	}
+
+	@Test
+	void recordsATimerAndALogLineWithArgumentsAndResultForEachToolCall(CapturedOutput output) {
+		given(tradingView.search("aselsan", 5)).willReturn(List.of(new SymbolMatch("ASELS", "Aselsan", "BIST")));
+		long before = toolCalls("findSymbol", "success");
+
+		client.callTool(new CallToolRequest("findSymbol", Map.of("query", "aselsan")));
+
+		assertThat(toolCalls("findSymbol", "success")).isEqualTo(before + 1);
+		assertThat(output).contains("arguments={\"query\":\"aselsan\"} result={\"query\":\"aselsan\",\"matches\":"
+				+ "[{\"symbol\":\"ASELS\",\"name\":\"Aselsan\",\"exchange\":\"BIST\"}]}");
+		// The trace and span IDs in front of the logger name tie the line to its trace.
+		assertThat(output).containsPattern("\\[[0-9a-f]{32}-[0-9a-f]{16}] \\S*ToolCallObserver\\s*: "
+				+ "MCP tool call findSymbol outcome=success durationMs=\\d+ ");
+	}
+
+	@Test
+	void recordsAToolErrorWithItsMessage(CapturedOutput output) {
+		long before = toolCalls("getHistory", "error");
+
+		client.callTool(new CallToolRequest("getHistory", Map.of("symbol", "ASELS", "range", "2d")));
+
+		assertThat(toolCalls("getHistory", "error")).isEqualTo(before + 1);
+		assertThat(output).containsPattern("MCP tool call getHistory outcome=error durationMs=\\d+ ")
+				.contains("arguments={\"symbol\":\"ASELS\",\"range\":\"2d\",\"interval\":null} "
+						+ "error=IllegalArgumentException: \"Range \\\"2d\\\" is not supported.");
+	}
+
+	/** The server is shared by the tests in this class, so calls are counted from where a test starts. */
+	private long toolCalls(String tool, String outcome) {
+		Timer timer = meterRegistry.find("mcp.tool.call").tags("gen_ai.tool.name", tool, "outcome", outcome).timer();
+		return timer == null ? 0 : timer.count();
 	}
 
 	private static String text(CallToolResult result) {

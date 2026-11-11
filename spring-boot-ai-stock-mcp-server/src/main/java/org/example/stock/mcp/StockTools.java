@@ -1,6 +1,8 @@
 package org.example.stock.mcp;
 
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 
 import org.example.stock.mcp.StockData.History;
 import org.example.stock.mcp.StockData.Quotes;
@@ -12,15 +14,19 @@ import org.springframework.stereotype.Component;
 
 /**
  * The MCP tools. They describe what the caller wants, not which provider answers it; {@link QuoteService} picks the
- * provider. An exception thrown here reaches the MCP client as a tool error carrying its message.
+ * provider. An exception thrown here reaches the MCP client as a tool error carrying its message. Every call is
+ * recorded by {@link ToolCallObserver}.
  */
 @Component
 public class StockTools {
 
 	private final QuoteService quoteService;
 
-	public StockTools(QuoteService quoteService) {
+	private final ToolCallObserver toolCalls;
+
+	public StockTools(QuoteService quoteService, ToolCallObserver toolCalls) {
 		this.quoteService = quoteService;
+		this.toolCalls = toolCalls;
 	}
 
 	@McpTool(name = "findSymbol", title = "Find a Borsa Istanbul ticker",
@@ -32,7 +38,7 @@ public class StockTools {
 					openWorldHint = true))
 	public SymbolMatches findSymbol(
 			@McpToolParam(description = "Company name or ticker to search for", required = true) String query) {
-		return quoteService.findSymbol(query);
+		return toolCalls.observe("findSymbol", arguments("query", query), () -> quoteService.findSymbol(query));
 	}
 
 	@McpTool(name = "getQuote", title = "Get delayed stock quotes",
@@ -44,7 +50,7 @@ public class StockTools {
 					openWorldHint = true))
 	public Quotes getQuote(@McpToolParam(description = "Tickers, for example [\"ASELS\", \"THYAO\"]",
 			required = true) List<String> symbols) {
-		return quoteService.quotes(symbols);
+		return toolCalls.observe("getQuote", arguments("symbols", symbols), () -> quoteService.quotes(symbols));
 	}
 
 	@McpTool(name = "getHistory", title = "Get price history",
@@ -59,7 +65,17 @@ public class StockTools {
 			@McpToolParam(description = "One of 1d, 5d, 1mo, 3mo, 6mo, 1y, 5y", required = true) String range,
 			@McpToolParam(description = "Candle size; leave empty for the default of the range",
 					required = false) String interval) {
-		return quoteService.history(symbol, range, interval);
+		return toolCalls.observe("getHistory", arguments("symbol", symbol, "range", range, "interval", interval),
+				() -> quoteService.history(symbol, range, interval));
+	}
+
+	/** Pairs of name and value, in the order given. A plain map so that a missing argument can be recorded as null. */
+	private static Map<String, Object> arguments(Object... namesAndValues) {
+		Map<String, Object> arguments = new LinkedHashMap<>();
+		for (int i = 0; i < namesAndValues.length; i += 2) {
+			arguments.put((String) namesAndValues[i], namesAndValues[i + 1]);
+		}
+		return arguments;
 	}
 
 }

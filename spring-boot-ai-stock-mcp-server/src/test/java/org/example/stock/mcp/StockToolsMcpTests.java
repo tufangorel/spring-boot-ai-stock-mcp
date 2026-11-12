@@ -34,6 +34,9 @@ import org.springframework.boot.test.system.CapturedOutput;
 import org.springframework.boot.test.system.OutputCaptureExtension;
 import org.springframework.boot.test.web.server.LocalServerPort;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
+import org.springframework.web.client.RestClient;
+import tools.jackson.databind.JsonNode;
+import tools.jackson.databind.json.JsonMapper;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -50,6 +53,8 @@ class StockToolsMcpTests {
 	static final Quote ASELS = new Quote("ASELS", "Aselsan Elektronik Sanayi ve Ticaret A.S. Class B", 330.75, "TRY",
 			1.75, 0.53, 329.5, 335.75, 325.25, 30437685L, OffsetDateTime.parse("2026-11-06T15:40:11+03:00"), 15,
 			"TradingView", true);
+
+	private static final JsonMapper JSON = JsonMapper.builder().build();
 
 	@LocalServerPort
 	private int port;
@@ -190,6 +195,31 @@ class StockToolsMcpTests {
 		assertThat(output).containsPattern("MCP tool call getHistory outcome=error durationMs=\\d+ ")
 				.contains("arguments={\"symbol\":\"ASELS\",\"range\":\"2d\",\"interval\":null} "
 						+ "error=IllegalArgumentException: \"Range \\\"2d\\\" is not supported.");
+	}
+
+	@Test
+	void reportsItsHealthWithoutDetails() {
+		assertThat(get("/actuator/health"))
+				.isEqualTo(json("{\"status\":\"UP\",\"groups\":[\"liveness\",\"providers\",\"readiness\"]}"));
+		assertThat(get("/actuator/health/liveness")).isEqualTo(json("{\"status\":\"UP\"}"));
+		assertThat(get("/actuator/health/readiness")).isEqualTo(json("{\"status\":\"UP\"}"));
+	}
+
+	/** The provider clients are replaced in this test, so no request has reached a provider. */
+	@Test
+	void showsTheStateOfEachProviderInItsOwnHealthGroup() {
+		assertThat(get("/actuator/health/providers")).isEqualTo(json("""
+				{"status":"UP","components":{"dataProviders":{"status":"UP","details":{
+				  "tradingView":{"state":"not called yet","consecutiveFailures":0},
+				  "yahoo":{"state":"not called yet","consecutiveFailures":0}}}}}"""));
+	}
+
+	private JsonNode get(String path) {
+		return json(RestClient.create().get().uri("http://127.0.0.1:" + port + path).retrieve().body(String.class));
+	}
+
+	private static JsonNode json(String text) {
+		return JSON.readTree(text);
 	}
 
 	/** The server is shared by the tests in this class, so calls are counted from where a test starts. */

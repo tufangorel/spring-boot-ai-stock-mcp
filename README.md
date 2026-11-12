@@ -4,7 +4,7 @@ Ask a question about a Borsa Istanbul stock in plain language, in Turkish or Eng
 
 The project has two Spring Boot applications:
 
-- **`spring-boot-ai-stock-mcp-server`** is an [MCP](https://modelcontextprotocol.io) server. It offers three tools, `findSymbol`, `getQuote` and `getHistory`, over Streamable HTTP. It fetches the data from TradingView and Yahoo Finance. It records every tool call with its arguments and result as a trace span, a log line and a timer, and can send the traces to Jaeger with OpenTelemetry (see [Observability](#observability)).
+- **`spring-boot-ai-stock-mcp-server`** is an [MCP](https://modelcontextprotocol.io) server. It offers three tools, `findSymbol`, `getQuote` and `getHistory`, over Streamable HTTP. It fetches the data from TradingView and Yahoo Finance. It records every tool call with its arguments and result as a trace span, a log line and a timer, and can send the traces to Jaeger with OpenTelemetry (see [Observability](#observability)). It also reports its own health and whether TradingView and Yahoo are answering (see [Health endpoints](#health-endpoints)).
 - **`spring-boot-ai-stock-agent`** is a REST API. Its endpoint, `POST /api/stocks/ask`, takes a natural-language sentence as input, such as "Aselsan hissesi şu an kaç TL?", and redirects the request to `spring-boot-ai-stock-mcp-server`. It does this through an LLM (OpenAI or Anthropic) and Spring AI's `ChatClient`: the model reads the sentence, decides which of the server's tools to call, and the agent forwards those calls to the server over MCP. The model then writes the answer, and the API returns it together with the tool data as JSON.
 
 ```mermaid
@@ -30,6 +30,51 @@ flowchart LR
 ```
 
 The dashed arrow is optional: the server sends its traces to Jaeger only when it runs with the `otel` profile.
+
+## Tech stack
+
+**Language and build**
+
+- **Java 25**
+- **Maven** as a multi-module build, run through the Maven Wrapper (`mvnw`, Maven 3.10.0)
+- **Spring Boot 4.1.1** on **Spring Framework 7.0.9**, with embedded **Tomcat 11**
+
+**AI and MCP**
+
+- **Spring AI 2.0.1**: `ChatClient` and tool calling in the agent, the MCP server starter (`@McpTool`, Streamable HTTP) in the server, and the MCP client starter in the agent
+- **MCP Java SDK 2.0.0**: the Model Context Protocol implementation that Spring AI uses
+- **OpenAI** (`gpt-4o-mini` by default) or **Anthropic Claude** (`claude-haiku-4-5` by default) as the chat model, chosen with `AI_PROVIDER`
+- **Cursor** or any other MCP client can use the server directly
+
+**Web and API**
+
+- **Spring MVC** for the agent's REST endpoint and the server's `/mcp` endpoint
+- **RestClient** on the JDK `HttpClient` for the requests to the data providers
+- **Jackson 3** (3.1.5) for JSON
+- **Jakarta Bean Validation** (Hibernate Validator 9.1) for the request body
+- **springdoc-openapi 3.1.1** for the OpenAPI description and Swagger UI of the agent
+
+**Market data**
+
+- **TradingView scanner** for symbol search and quotes
+- **Yahoo Finance chart API** for price history and as the quote fallback
+
+**Observability and health**
+
+- **Spring Boot Actuator**: health, liveness, readiness, info and metrics endpoints
+- **Micrometer 1.17.1**: the Observation API and the timers
+- **Micrometer Tracing 1.7.1** with its OpenTelemetry bridge, and **OpenTelemetry 1.62.0** (SDK and OTLP exporter) for the traces
+- **Jaeger 2** (optional, tried with 2.23.0) to view the traces
+- **Logback** for the log lines, which carry the trace ID
+
+**Testing and quality**
+
+- **JUnit 6** (Jupiter 6.0.3), **AssertJ 3.27** and **Mockito 5**
+- **Spring Boot Test**: `MockMvc`, `MockRestServiceServer` and output capture, and Micrometer's `TestObservationRegistry`
+- **JaCoCo 0.8.15** for coverage reports
+- **GitHub Actions**: `mvn verify` on JDK 25 (Temurin) for every push and pull request to `main`
+
+The versions of Java, Spring Boot, Spring AI, springdoc-openapi and JaCoCo are set in [`pom.xml`](pom.xml). The others are the ones those bring in.
 
 ## Why MCP
 
@@ -277,6 +322,88 @@ Two settings control what is recorded about a call:
 | `stocks.record-tool-payloads` | `true` | Set it to `false` to leave the arguments and the result out of the log line and the span. The tool, outcome, duration and any error message are still recorded, and an error message can quote an argument. |
 | `stocks.max-payload-characters` | `4000` | Arguments and results longer than this are cut, and the cut is marked with the number of characters left out. A `getHistory` result can be over 8,000 characters. |
 
+### Health endpoints
+
+The server reports its health on the same port and address as `/mcp`, so only this machine can read it:
+
+| Address | Shows |
+|---------|-------|
+| `http://localhost:8081/actuator/health` | The status `UP` while the application is running and the disk is not full. The details are hidden. |
+| `/actuator/health/liveness` | Whether the application is running. |
+| `/actuator/health/readiness` | Whether it is ready to take requests. |
+| `/actuator/health/providers` | How the last request to TradingView and to Yahoo went (see [Checking the providers](#checking-the-providers)). |
+
+`UP` means that the application is running. It does not mean that TradingView or Yahoo are answering: they are outside the server's control, the server falls back or returns a tool error when one of them fails, and a restart would not help. So a failing provider never changes the status of any of these addresses.
+
+With the `otel` profile, every request to a health address is a trace in Jaeger too.
+
+### Checking the providers
+
+There are three places to see whether TradingView and Yahoo are answering. None of them sends a request of its own; they show what happened to the requests the tools made.
+
+**The `providers` health group.** `http://localhost:8081/actuator/health/providers` shows the outcome of the last request to each provider. The provider clients record how each request of the tools ended, and the health check only reads that record:
+
+```mermaid
+flowchart LR
+    Monitor["You or a monitoring tool"] -->|"GET /actuator/health/providers"| Indicator
+    subgraph healthServer [spring-boot-ai-stock-mcp-server port 8081]
+        HealthTools["StockTools tool call"] --> HealthRouting["QuoteService"]
+        HealthRouting --> Clients["TradingViewClient and YahooClient"]
+        Clients -->|"outcome of each request"| Activity["ProviderActivity last success, last failure, failures in a row"]
+        Indicator["DataProvidersHealthIndicator always UP"] -->|"reads, sends no request"| Activity
+    end
+    Clients -->|"requests of the tools"| Providers["TradingView and Yahoo"]
+```
+
+This is the response while Yahoo could not be reached:
+
+```json
+{
+  "components": {
+    "dataProviders": {
+      "details": {
+        "tradingView": { "state": "ok", "lastSuccess": "2026-11-12T12:51:55+03:00", "consecutiveFailures": 0 },
+        "yahoo": { "state": "failing", "lastFailure": "2026-11-12T12:51:55+03:00", "lastError": "ConnectException", "consecutiveFailures": 3 }
+      },
+      "status": "UP"
+    }
+  },
+  "status": "UP"
+}
+```
+
+| Field | Meaning |
+|-------|---------|
+| `state` | `not called yet`, `ok` when the last request was answered, or `failing` when it was not |
+| `lastSuccess`, `lastFailure` | The Istanbul time of the last request of each kind. Left out when there was none. |
+| `lastError` | Why the last failed request failed: the status, such as `HTTP 503`, or the name of the exception when there was no response, such as `ConnectException` or `HttpTimeoutException` |
+| `consecutiveFailures` | The failed requests since the last answered one |
+
+A request counts as answered when the status is 2xx. For Yahoo, 404 counts too, because that is its answer for a ticker it does not know. Every other status, such as 429 or 503, and every request without a response is a failure.
+
+Things to know:
+
+- The information is as old as the last request. A result from the cache (60 seconds) sends no request, and a provider that no tool asks keeps its last state.
+- It is kept in memory, so both providers are `not called yet` after a restart.
+- `status` is always `UP`, also while a provider is `failing`.
+
+**The request timer.** Spring records every request to a provider in the `http.client.requests` timer, at `http://localhost:8081/actuator/metrics/http.client.requests`. Its `client.name` tag is the provider's host, `scanner.tradingview.com` or `query1.finance.yahoo.com`, and `outcome` and `status` say how the request ended:
+
+| `outcome` | `status` | Meaning |
+|-----------|----------|---------|
+| `SUCCESS` | `200` | The provider answered |
+| `CLIENT_ERROR` | `404`, `429`, ... | A 4xx status. From Yahoo, 404 is an unknown ticker. |
+| `SERVER_ERROR` | `503`, ... | A 5xx status |
+| `UNKNOWN` | `CLIENT_ERROR` | No response: a timeout or a failed connection. Here `CLIENT_ERROR` is Spring's name for a failure on the client's side, not a 4xx status. |
+
+For example, `?tag=client.name:query1.finance.yahoo.com&tag=outcome:UNKNOWN` counts the Yahoo requests that got no response.
+
+**Failed tool calls.** `http://localhost:8081/actuator/metrics/mcp.tool.call?tag=outcome:error` counts the tool calls that failed. Its `error` tag tells the causes apart: `IllegalStateException` is a provider that did not respond, and `IllegalArgumentException` is invalid input, such as an unknown range. In Jaeger, enter `outcome=error` in the Attributes field of the search form to list the traces of the failed tool calls.
+
+Both timer addresses answer 404 until something with the tags you ask for has happened, so 404 there means none so far.
+
+Nothing sends an alert. These are read by hand, or by a monitoring tool you add later.
+
 ## Building and testing
 
 ```bash
@@ -285,11 +412,7 @@ Two settings control what is recorded about a call:
 
 The tests make no network calls:
 
-- **Server:** provider responses recorded from the live endpoints are replayed with `MockRestServiceServer`. The tests cover the mapping, the Yahoo fallback, the cache, ticker normalization and market hours. An MCP test starts the server on a random port, connects with an MCP client, lists the tools and calls them. It also pins down the result format Spring AI's MCP client gives the agent, and checks that each tool call is recorded as a timer and as a log line with its trace ID.
+- **Server:** provider responses recorded from the live endpoints are replayed with `MockRestServiceServer`. The tests cover the mapping, the Yahoo fallback, the cache, ticker normalization and market hours. An MCP test starts the server on a random port, connects with an MCP client, lists the tools and calls them. It also pins down the result format Spring AI's MCP client gives the agent, checks that each tool call is recorded as a timer and as a log line with its trace ID, and reads the health addresses. Further tests cover how provider requests are recorded for the `providers` health group, the tags of the `http.client.requests` timer, and the read timeout, against a local port that never answers.
 - **Agent:** a scripted `ChatModel` asks for tool calls and then answers, and fake tools stand in for the MCP server. The tests cover the structured response, the grounding warnings, the 400 and 502 responses and both model providers.
 
 JaCoCo writes coverage reports to `target/site/jacoco` in each module.
-
-## Stack
-
-Java 25, Spring Boot 4.1.1, Spring AI 2.0.1 (MCP server and client, OpenAI, Anthropic), OpenTelemetry tracing through Micrometer, springdoc-openapi 3.1.1, JaCoCo, GitHub Actions.

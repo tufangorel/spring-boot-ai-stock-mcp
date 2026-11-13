@@ -16,6 +16,7 @@ import org.example.stock.mcp.StockData.History;
 import org.example.stock.mcp.StockData.Quote;
 import org.example.stock.mcp.StockData.Quotes;
 import org.example.stock.mcp.StockData.SymbolMatches;
+import org.example.stock.mcp.provider.ProviderRetry;
 import org.example.stock.mcp.provider.TradingViewClient;
 import org.example.stock.mcp.provider.YahooClient;
 import org.springframework.stereotype.Service;
@@ -23,7 +24,9 @@ import org.springframework.web.client.RestClientException;
 
 /**
  * Chooses the provider for each request so that the tools, and the model behind them, never have to. Quotes and
- * symbol search come from TradingView, with Yahoo as the quote fallback; history comes from Yahoo.
+ * symbol search come from TradingView, with Yahoo as the quote fallback; history comes from Yahoo. Search, history
+ * and the Yahoo quote fallback are tried once more after a quick temporary failure; TradingView quotes are not,
+ * so that the Yahoo fallback is not delayed.
  */
 @Service
 public class QuoteService {
@@ -47,6 +50,8 @@ public class QuoteService {
 
 	private final YahooClient yahoo;
 
+	private final ProviderRetry providerRetry;
+
 	private final MarketClock marketClock;
 
 	private final StockProperties properties;
@@ -57,10 +62,11 @@ public class QuoteService {
 
 	private final TtlCache<String, History> histories;
 
-	public QuoteService(TradingViewClient tradingView, YahooClient yahoo, MarketClock marketClock,
-			StockProperties properties, Clock clock) {
+	public QuoteService(TradingViewClient tradingView, YahooClient yahoo, ProviderRetry providerRetry,
+			MarketClock marketClock, StockProperties properties, Clock clock) {
 		this.tradingView = tradingView;
 		this.yahoo = yahoo;
+		this.providerRetry = providerRetry;
 		this.marketClock = marketClock;
 		this.properties = properties;
 		this.quotes = new TtlCache<>(clock, properties.cacheTtl());
@@ -80,7 +86,8 @@ public class QuoteService {
 		}
 		SymbolMatches matches;
 		try {
-			matches = new SymbolMatches(text, tradingView.search(text, properties.maxMatches()));
+			matches = new SymbolMatches(text, providerRetry.execute("TradingView search",
+					() -> tradingView.search(text, properties.maxMatches())));
 		}
 		catch (RestClientException ex) {
 			throw unavailable("Symbol search is unavailable", ex);
@@ -140,7 +147,8 @@ public class QuoteService {
 		}
 		History history;
 		try {
-			history = yahoo.history(ticker, range, chosen, properties.maxCandles())
+			history = providerRetry.execute("Yahoo history",
+					() -> yahoo.history(ticker, range, chosen, properties.maxCandles()))
 					.orElseThrow(() -> new IllegalArgumentException("No Borsa Istanbul stock has the ticker " + ticker
 							+ ". Use findSymbol to look it up by company name."));
 		}
@@ -169,7 +177,8 @@ public class QuoteService {
 				continue;
 			}
 			try {
-				yahoo.quote(ticker, marketOpen).ifPresent(quote -> fetched.put(ticker, quote));
+				providerRetry.execute("Yahoo quote", () -> yahoo.quote(ticker, marketOpen))
+						.ifPresent(quote -> fetched.put(ticker, quote));
 			}
 			catch (RestClientException ex) {
 				if (tradingViewFailure != null) {

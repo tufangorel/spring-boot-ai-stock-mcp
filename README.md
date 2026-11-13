@@ -58,6 +58,7 @@ The dashed arrow is optional: the server sends its traces to Jaeger only when it
 
 - **TradingView scanner** for symbol search and quotes
 - **Yahoo Finance chart API** for price history and as the quote fallback
+- **Spring Framework `RetryTemplate`** for one retry of a temporary provider failure
 
 **Observability and health**
 
@@ -84,6 +85,7 @@ The tools are named for what the caller wants, not for a provider, so the model 
 
 - quotes and symbol search come from TradingView, and quotes fall back to Yahoo when TradingView fails or does not know a ticker
 - price history comes from Yahoo
+- symbol search, price history and the Yahoo quote fallback are tried once more after a quick temporary failure; TradingView quotes are not, so the Yahoo fallback is not delayed (see [Provider retries](#provider-retries))
 - results are cached for 60 seconds, and every outbound request has a 3-second connect timeout and a 5-second read timeout
 
 ## Tools
@@ -223,8 +225,65 @@ Plain integers such as times, dates and the 15-minute delay are not checked.
 
 - **Delayed data.** Prices from both providers are about 15 minutes behind Borsa Istanbul. Real-time BIST data needs a licensed data vendor.
 - **Unofficial endpoints.** The TradingView scanner and the Yahoo chart API are not documented public APIs and can change or block requests at any time. Use them for personal, low-volume use, and do not redistribute the data.
+- **Provider retries.** Temporary failures of some provider calls are tried once more; see [Provider retries](#provider-retries).
 - **Market hours.** Open means weekdays from 10:00 to 18:00 Istanbul time. Public holidays and half days are not modeled, so on those days `marketOpen` can be wrong.
 - **Not investment advice.** The disclaimer is part of every response.
+
+## Provider retries
+
+TradingView and Yahoo are unofficial endpoints. A connection blip or a short 503 should not turn into a tool error when a second attempt would succeed. The server retries only those cases, and only on the calls that have no better second chance.
+
+```mermaid
+flowchart TD
+    Call["Provider call from QuoteService"] --> Attempt["First attempt"]
+    Attempt -->|ok| Done["Return the result"]
+    Attempt -->|"connection or DNS error, or HTTP 502, 503 or 504"| Wait["Wait about 300 ms with a little jitter"]
+    Wait --> Second["Second attempt"]
+    Second -->|ok or fail| Done
+    Attempt -->|"timeout, 429, other 4xx, or anything else"| Done
+```
+
+### Which calls are retried
+
+The retry sits in [`QuoteService`](spring-boot-ai-stock-mcp-server/src/main/java/org/example/stock/mcp/QuoteService.java), not inside the HTTP client. That way TradingView quotes can fall straight through to Yahoo:
+
+| Call | Tool | Retried? | Why |
+|------|------|----------|-----|
+| TradingView search | `findSymbol` | Yes | No other provider |
+| Yahoo history | `getHistory` | Yes | No other provider |
+| Yahoo quote | `getQuote` fallback or missing tickers | Yes | Last resort after TradingView |
+| TradingView quotes | `getQuote` | No | Yahoo is already the second chance; a TradingView retry would only delay it |
+
+A result from the 60-second cache sends no request, so it is never retried. Invalid input, such as an unknown range, fails before any provider is called.
+
+### Which failures are retried
+
+[`ProviderRetry`](spring-boot-ai-stock-mcp-server/src/main/java/org/example/stock/mcp/provider/ProviderRetry.java) decides from the exception:
+
+| Failure | Retried? | Reason |
+|---------|----------|--------|
+| Connection refused or reset, DNS failure (`ResourceAccessException` whose cause is not a timeout) | Yes | Fails quickly and is often a blip |
+| HTTP 502, 503 or 504 (`HttpServerErrorException`) | Yes | Usually temporary on the provider's side |
+| Connect or read timeout | No | Already cost up to 3 s or 5 s; a second try would break the agent's 20-second tool budget |
+| HTTP 429 and other 4xx, including Yahoo's 404 | No | The answer will not change, and 429 means slow down |
+| Any other error | No | |
+
+### How it is implemented
+
+- **One retry only.** Spring Framework's `RetryTemplate` and `RetryPolicy` run the call with `maxRetries(1)`, so there are at most two attempts. The delay is about 300 ms with about 100 ms of jitter, so simultaneous callers do not retry in lockstep. There is no exponential backoff and no new dependency: both classes come with Spring Framework 7.
+- **Wrap at the call site.** `QuoteService` calls `providerRetry.execute("TradingView search", () -> …)` (and the same for Yahoo history and Yahoo quote). `TradingViewClient` and `YahooClient` are unchanged. The TradingView quote path stays a direct call.
+- **Original exception.** `RetryTemplate.invoke` rethrows the provider's `RestClientException`, so the existing messages such as "Symbol search is unavailable because the data provider did not respond" stay the same.
+- **Log line.** Before the second attempt, the server logs a warn line with the call name and the reason, for example `TradingView search failed (HTTP 503); trying once more`.
+
+### What you see when a retry happens
+
+Each attempt is a real request, so each one:
+
+- counts in the `http.client.requests` timer
+- updates `/actuator/health/providers` (a failed attempt that is then followed by a success leaves `state` as `ok` and may still show `lastFailure`)
+- appears as its own span in Jaeger when the `otel` profile is on
+
+A successful retry is invisible in the tool result: the tool returns the same JSON as a call that worked on the first try. Only the log line, the metrics and the health details show that there were two attempts.
 
 ## Using the server from Cursor
 
@@ -412,7 +471,7 @@ Nothing sends an alert. These are read by hand, or by a monitoring tool you add 
 
 The tests make no network calls:
 
-- **Server:** provider responses recorded from the live endpoints are replayed with `MockRestServiceServer`. The tests cover the mapping, the Yahoo fallback, the cache, ticker normalization and market hours. An MCP test starts the server on a random port, connects with an MCP client, lists the tools and calls them. It also pins down the result format Spring AI's MCP client gives the agent, checks that each tool call is recorded as a timer and as a log line with its trace ID, and reads the health addresses. Further tests cover how provider requests are recorded for the `providers` health group, the tags of the `http.client.requests` timer, and the read timeout, against a local port that never answers.
+- **Server:** provider responses recorded from the live endpoints are replayed with `MockRestServiceServer`. The tests cover the mapping, the Yahoo fallback, the one provider retry, the cache, ticker normalization and market hours. An MCP test starts the server on a random port, connects with an MCP client, lists the tools and calls them. It also pins down the result format Spring AI's MCP client gives the agent, checks that each tool call is recorded as a timer and as a log line with its trace ID, and reads the health addresses. Further tests cover how provider requests are recorded for the `providers` health group, the tags of the `http.client.requests` timer, and the read timeout, against a local port that never answers.
 - **Agent:** a scripted `ChatModel` asks for tool calls and then answers, and fake tools stand in for the MCP server. The tests cover the structured response, the grounding warnings, the 400 and 502 responses and both model providers.
 
 JaCoCo writes coverage reports to `target/site/jacoco` in each module.

@@ -5,6 +5,7 @@ import java.time.Clock;
 
 import io.micrometer.observation.ObservationRegistry;
 import org.example.stock.mcp.provider.ProviderActivity;
+import org.example.stock.mcp.provider.ProviderRetry;
 import org.example.stock.mcp.provider.TradingViewClient;
 import org.example.stock.mcp.provider.YahooClient;
 import org.springframework.context.annotation.Bean;
@@ -34,6 +35,11 @@ public class StockConfig {
 	@Bean
 	ProviderActivity providerActivity(Clock clock) {
 		return new ProviderActivity(clock, ProviderActivity.TRADING_VIEW, ProviderActivity.YAHOO);
+	}
+
+	@Bean
+	ProviderRetry providerRetry() {
+		return new ProviderRetry();
 	}
 
 	@Bean

@@ -1,5 +1,7 @@
 package org.example.stock.mcp;
 
+import java.net.ConnectException;
+import java.net.http.HttpTimeoutException;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.OffsetDateTime;
@@ -12,6 +14,7 @@ import org.example.stock.mcp.StockData.Quote;
 import org.example.stock.mcp.StockData.Quotes;
 import org.example.stock.mcp.StockData.SymbolMatch;
 import org.example.stock.mcp.StockData.SymbolMatches;
+import org.example.stock.mcp.provider.ProviderRetry;
 import org.example.stock.mcp.provider.TradingViewClient;
 import org.example.stock.mcp.provider.YahooClient;
 import org.junit.jupiter.api.Test;
@@ -19,6 +22,10 @@ import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.CsvSource;
 import org.junit.jupiter.params.provider.NullAndEmptySource;
 import org.junit.jupiter.params.provider.ValueSource;
+import org.springframework.core.retry.RetryPolicy;
+import org.springframework.core.retry.RetryTemplate;
+import org.springframework.http.HttpStatus;
+import org.springframework.web.client.HttpServerErrorException;
 import org.springframework.web.client.ResourceAccessException;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -44,7 +51,14 @@ class QuoteServiceTests {
 
 	private final YahooClient yahoo = mock(YahooClient.class);
 
-	private final QuoteService service = new QuoteService(tradingView, yahoo, new MarketClock(clock),
+	/** No delay between attempts, so the retry tests stay fast. */
+	private final ProviderRetry providerRetry = new ProviderRetry(new RetryTemplate(RetryPolicy.builder()
+			.maxRetries(1)
+			.delay(Duration.ZERO)
+			.predicate(ProviderRetry::isRetryable)
+			.build()));
+
+	private final QuoteService service = new QuoteService(tradingView, yahoo, providerRetry, new MarketClock(clock),
 			StockProperties.defaults(), clock);
 
 	@Test
@@ -74,28 +88,54 @@ class QuoteServiceTests {
 
 	@Test
 	void fallsBackToYahooWhenTradingViewFails() {
-		given(tradingView.quotes(anyList(), anyBoolean())).willThrow(new ResourceAccessException("timed out"));
+		given(tradingView.quotes(anyList(), anyBoolean())).willThrow(timeout("TradingView timed out"));
 		given(yahoo.quote("ASELS", true)).willReturn(Optional.of(quote("ASELS", "Yahoo Finance")));
 
 		assertThat(service.quotes(List.of("ASELS")).quotes()).extracting(Quote::source)
 				.containsExactly("Yahoo Finance");
+		verify(tradingView, times(1)).quotes(anyList(), anyBoolean());
 	}
 
 	@Test
 	void reportsATickerAsNotFoundWhenOnlyYahooFails() {
 		given(tradingView.quotes(anyList(), anyBoolean())).willReturn(List.of());
-		given(yahoo.quote("NOPE1", true)).willThrow(new ResourceAccessException("timed out"));
+		given(yahoo.quote("NOPE1", true)).willThrow(timeout("Yahoo timed out"));
 
 		assertThat(service.quotes(List.of("NOPE1")).notFound()).containsExactly("NOPE1");
+		verify(yahoo, times(1)).quote("NOPE1", true);
 	}
 
 	@Test
 	void failsWhenBothProvidersFail() {
-		given(tradingView.quotes(anyList(), anyBoolean())).willThrow(new ResourceAccessException("timed out"));
-		given(yahoo.quote("ASELS", true)).willThrow(new ResourceAccessException("timed out"));
+		given(tradingView.quotes(anyList(), anyBoolean())).willThrow(timeout("TradingView timed out"));
+		given(yahoo.quote("ASELS", true)).willThrow(timeout("Yahoo timed out"));
 
 		assertThatIllegalStateException().isThrownBy(() -> service.quotes(List.of("ASELS")))
 				.withMessage("Quotes are unavailable because the data provider did not respond. Try again in a minute.");
+		verify(yahoo, times(1)).quote("ASELS", true);
+	}
+
+	@Test
+	void doesNotRetryTradingViewQuotesBeforeFallingBackToYahoo() {
+		given(tradingView.quotes(anyList(), anyBoolean()))
+				.willThrow(HttpServerErrorException.create(HttpStatus.SERVICE_UNAVAILABLE, "down", null, null, null));
+		given(yahoo.quote("ASELS", true)).willReturn(Optional.of(quote("ASELS", "Yahoo Finance")));
+
+		assertThat(service.quotes(List.of("ASELS")).quotes()).extracting(Quote::source)
+				.containsExactly("Yahoo Finance");
+		verify(tradingView, times(1)).quotes(anyList(), anyBoolean());
+		verify(yahoo, times(1)).quote("ASELS", true);
+	}
+
+	@Test
+	void retriesYahooQuoteAfterAGatewayError() {
+		given(tradingView.quotes(anyList(), anyBoolean())).willReturn(List.of());
+		given(yahoo.quote("NEWCO", true))
+				.willThrow(HttpServerErrorException.create(HttpStatus.BAD_GATEWAY, "blip", null, null, null))
+				.willReturn(Optional.of(quote("NEWCO", "Yahoo Finance")));
+
+		assertThat(service.quotes(List.of("NEWCO")).quotes()).extracting(Quote::symbol).containsExactly("NEWCO");
+		verify(yahoo, times(2)).quote("NEWCO", true);
 	}
 
 	@Test
@@ -175,10 +215,31 @@ class QuoteServiceTests {
 
 	@Test
 	void reportsSearchFailures() {
-		given(tradingView.search("aselsan", 5)).willThrow(new ResourceAccessException("timed out"));
+		given(tradingView.search("aselsan", 5)).willThrow(timeout("TradingView timed out"));
 
 		assertThatIllegalStateException().isThrownBy(() -> service.findSymbol("aselsan"))
 				.withMessageStartingWith("Symbol search is unavailable");
+		verify(tradingView, times(1)).search("aselsan", 5);
+	}
+
+	@Test
+	void retriesSymbolSearchAfterAGatewayError() {
+		given(tradingView.search("aselsan", 5))
+				.willThrow(HttpServerErrorException.create(HttpStatus.SERVICE_UNAVAILABLE, "down", null, null, null))
+				.willReturn(List.of(new SymbolMatch("ASELS", "Aselsan", "BIST")));
+
+		assertThat(service.findSymbol("aselsan").matches()).extracting(SymbolMatch::symbol).containsExactly("ASELS");
+		verify(tradingView, times(2)).search("aselsan", 5);
+	}
+
+	@Test
+	void retriesSymbolSearchAfterAConnectionFailure() {
+		given(tradingView.search("aselsan", 5))
+				.willThrow(new ResourceAccessException("refused", new ConnectException("Connection refused")))
+				.willReturn(List.of(new SymbolMatch("ASELS", "Aselsan", "BIST")));
+
+		assertThat(service.findSymbol("aselsan").matches()).hasSize(1);
+		verify(tradingView, times(2)).search("aselsan", 5);
 	}
 
 	@ParameterizedTest(name = "{0} defaults to {1}")
@@ -212,12 +273,39 @@ class QuoteServiceTests {
 	@Test
 	void reportsAnUnknownTickerAndProviderFailuresForHistory() {
 		given(yahoo.history("NOPE1", "1d", "5m", 120)).willReturn(Optional.empty());
-		given(yahoo.history("ASELS", "1d", "5m", 120)).willThrow(new ResourceAccessException("timed out"));
+		given(yahoo.history("ASELS", "1d", "5m", 120)).willThrow(timeout("Yahoo timed out"));
 
 		assertThatIllegalArgumentException().isThrownBy(() -> service.history("NOPE1", "1d", null))
 				.withMessageContaining("No Borsa Istanbul stock has the ticker NOPE1");
 		assertThatIllegalStateException().isThrownBy(() -> service.history("ASELS", "1d", null))
 				.withMessageStartingWith("Price history is unavailable");
+		verify(yahoo, times(1)).history("ASELS", "1d", "5m", 120);
+	}
+
+	@Test
+	void retriesHistoryAfterAGatewayError() {
+		History history = history("5d", "1d");
+		given(yahoo.history("ASELS", "5d", "1d", 120))
+				.willThrow(HttpServerErrorException.create(HttpStatus.BAD_GATEWAY, "blip", null, null, null))
+				.willReturn(Optional.of(history));
+
+		assertThat(service.history("ASELS", "5d", "1d")).isSameAs(history);
+		verify(yahoo, times(2)).history("ASELS", "5d", "1d", 120);
+	}
+
+	@Test
+	void retriesHistoryAfterAConnectionFailure() {
+		History history = history("1d", "5m");
+		given(yahoo.history("ASELS", "1d", "5m", 120))
+				.willThrow(new ResourceAccessException("refused", new ConnectException("Connection refused")))
+				.willReturn(Optional.of(history));
+
+		assertThat(service.history("ASELS", "1d", null)).isSameAs(history);
+		verify(yahoo, times(2)).history("ASELS", "1d", "5m", 120);
+	}
+
+	private static ResourceAccessException timeout(String message) {
+		return new ResourceAccessException(message, new HttpTimeoutException(message));
 	}
 
 	private static Quote quote(String symbol, String source) {

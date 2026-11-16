@@ -1,0 +1,52 @@
+{
+  "tools": [
+    {
+      "name": "findSymbol",
+      "description": "Finds Borsa Istanbul tickers for a company name or part of one, for example \"aselsan\" or \"turk hava\". Returns at most 5 matches, largest companies first. Use it whenever the ticker is not certain.",
+      "parameters": [
+        {
+          "name": "query",
+          "description": "Company name or ticker to search for",
+          "type": "string",
+          "required": true
+        }
+      ]
+    },
+    {
+      "name": "getQuote",
+      "description": "Returns the latest delayed quote for 1 to 10 Borsa Istanbul tickers such as ASELS or THYAO. Each quote has asOf (Istanbul time the price is from), delayMinutes, source, and marketOpen. When marketOpen is false the price is the last close. Unknown tickers are listed in notFound.",
+      "parameters": [
+        {
+          "name": "symbols",
+          "description": "Tickers, for example [\"ASELS\", \"THYAO\"]",
+          "type": "array",
+          "required": true
+        }
+      ]
+    },
+    {
+      "name": "getHistory",
+      "description": "Returns delayed OHLC candles for one Borsa Istanbul ticker, oldest first, at most 120. range is one of 1d, 5d, 1mo, 3mo, 6mo, 1y, 5y. interval is optional and must fit the range: 1d takes 1m, 5m, 15m, 30m, 60m; 5d takes 5m, 15m, 30m, 60m, 1d; 1mo takes 30m, 60m, 1d, 1wk; 3mo and 6mo take 1d, 1wk; 1y takes 1d, 1wk, 1mo; 5y takes 1wk, 1mo.",
+      "parameters": [
+        {
+          "name": "symbol",
+          "description": "Ticker, for example ASELS",
+          "type": "string",
+          "required": true
+        },
+        {
+          "name": "range",
+          "description": "One of 1d, 5d, 1mo, 3mo, 6mo, 1y, 5y",
+          "type": "string",
+          "required": true
+        },
+        {
+          "name": "interval",
+          "description": "Candle size; leave empty for the default of the range",
+          "type": "string",
+          "required": false
+        }
+      ]
+    }
+  ]
+}

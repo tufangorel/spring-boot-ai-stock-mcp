@@ -43,7 +43,7 @@ The dashed arrow is optional: the server sends its traces to Jaeger only when it
 
 - **Spring AI 2.0.1**: `ChatClient` and tool calling in the agent, the MCP server starter (`@McpTool`, Streamable HTTP) in the server, and the MCP client starter in the agent
 - **MCP Java SDK 2.0.0**: the Model Context Protocol implementation that Spring AI uses
-- **OpenAI** (`gpt-4o-mini` by default) or **Anthropic Claude** (`claude-haiku-4-5` by default) as the chat model, chosen with `AI_PROVIDER`
+- **OpenAI** (`gpt-6.1-sol` by default) or **Anthropic Claude** (`claude-fable-5-2` by default) as the chat model, chosen with `AI_PROVIDER`
 - **Cursor** or any other MCP client can use the server directly
 
 **Web and API**
@@ -126,18 +126,30 @@ You need Java 25. Start the server first, then the agent, each in its own termin
 
 ```bash
 export OPENAI_API_KEY=sk-...
+export OPENAI_MODEL=gpt-6.1-sol
 ./mvnw -pl spring-boot-ai-stock-agent spring-boot:run
 ```
 
-On Windows, use `.\mvnw.cmd` and set the key with `$env:OPENAI_API_KEY="sk-..."`.
+`OPENAI_MODEL` selects the OpenAI model. Leave it unset to keep the default, `gpt-6.1-sol`.
+
+To answer with Anthropic instead, set `AI_PROVIDER` to `anthropic` and provide an Anthropic key. `ANTHROPIC_MODEL` selects the Anthropic model. Leave it unset to keep the default, `claude-fable-5-2`.
+
+```bash
+export AI_PROVIDER=anthropic
+export ANTHROPIC_API_KEY=sk-ant-...
+export ANTHROPIC_MODEL=claude-fable-5-2
+./mvnw -pl spring-boot-ai-stock-agent spring-boot:run
+```
+
+On Windows, use `.\mvnw.cmd`. For OpenAI, set `$env:OPENAI_API_KEY="sk-..."` and `$env:OPENAI_MODEL="gpt-6.1-sol"`. For Anthropic, set `$env:AI_PROVIDER="anthropic"`, `$env:ANTHROPIC_API_KEY="sk-ant-..."`, and `$env:ANTHROPIC_MODEL="claude-fable-5-2"`.
 
 The agent connects to the server on the first question, so it also starts while the server is down; questions then return 502 until the server is up.
 
 | Variable | Default | Used by |
 |----------|---------|---------|
 | `AI_PROVIDER` | `openai` | agent: `openai` or `anthropic` |
-| `OPENAI_API_KEY`, `OPENAI_MODEL` | `gpt-4o-mini` | agent |
-| `ANTHROPIC_API_KEY`, `ANTHROPIC_MODEL` | `claude-haiku-4-5` | agent |
+| `OPENAI_API_KEY`, `OPENAI_MODEL` | `gpt-6.1-sol` | agent |
+| `ANTHROPIC_API_KEY`, `ANTHROPIC_MODEL` | `claude-fable-5-2` | agent |
 | `STOCK_MCP_URL` | `http://localhost:8081` | agent: where the MCP server is |
 | `PORT` | `8080` for the agent, `8081` for the server | both |
 | `SPRING_PROFILES_ACTIVE` | none | server: `otel` sends traces to Jaeger (see [Observability](#observability)) |
@@ -220,6 +232,33 @@ A prompt cannot guarantee any of this, so `AnswerGrounding` checks the answer af
 - a tool failed, or a ticker was not found
 
 Plain integers such as times, dates and the 15-minute delay are not checked.
+
+## Stock Agent Model Tool Call Audit
+
+Each MCP tool call made while answering a question is also written as one INFO line in the agent log. The line names the model this process is configured to use (`AI_PROVIDER` plus `OPENAI_MODEL` or `ANTHROPIC_MODEL`), so an OpenAI answer and an Anthropic answer can be told apart:
+
+```mermaid
+flowchart TD
+    Request["POST /api/stocks/ask"] --> Ask["StockAgent.ask"]
+    Ask --> Model["Selected model"]
+    Model --> Callback["RecordingToolCallback"]
+    Callback --> Mcp["MCP tool"]
+    Callback --> LogLine["One INFO line: tool, model, outcome, duration, payloads"]
+    Callback --> Response["StockAnswer toolCalls"]
+```
+
+```
+Agent MCP tool call getQuote model=openai/gpt-4o-mini outcome=success durationMs=842 arguments={"symbols":["ASELS"]} result={"quotes":[...]}
+Agent MCP tool call getHistory model=anthropic/claude-haiku-4-5 outcome=error durationMs=20 arguments={"symbol":"ASELS","range":"2d"} error=IllegalArgumentException: "Range \"2d\" is not supported."
+```
+
+Arguments and results longer than 4000 characters are cut. The question itself is not logged. A question that calls two tools writes two lines. The HTTP response is unchanged: the same call is still copied into `toolCalls`, and a failure is still returned to the model.
+
+This is separate from the MCP server's `MCP tool call` line. The server sees the tool and the provider request, but it does not know which chat model asked for it.
+
+The audit is one INFO line in the agent application log, written by `RecordingToolCallback` on the same path that records the call for the response. That wrapper runs for every tool callback given to the model, so a success and a failure each produce one line with the tool name, the configured model, the outcome, the duration, and the arguments and result. `SelectedChatModel` builds the model label from `AI_PROVIDER` and `OPENAI_MODEL` or `ANTHROPIC_MODEL`, which the MCP server cannot see from its own process. Arguments and results are cut at 4000 characters, the same limit as the server tool log, and the question is left out of the line. The HTTP response stays as it was.
+
+The line is written with Apache Commons Logging (`org.apache.commons.logging`), the same API the MCP server uses in `ToolCallObserver`. `RecordingToolCallback` takes a `Log` from `LogFactory.getLog` and calls `info`, so the line is an INFO record on the agent console. Spring Boot routes that API to Logback, which is the logging implementation this application runs.
 
 ## Limits
 

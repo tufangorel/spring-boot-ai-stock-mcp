@@ -62,13 +62,16 @@ public class StockAgent {
 
 	private final StockAgentProperties properties;
 
+	private final SelectedChatModel selectedChatModel;
+
 	public StockAgent(ChatClient.Builder chatClientBuilder, ToolCallbackProvider tools, JsonMapper jsonMapper,
-			Clock clock, StockAgentProperties properties) {
+			Clock clock, StockAgentProperties properties, SelectedChatModel selectedChatModel) {
 		this.chatClient = chatClientBuilder.defaultSystem(SYSTEM_PROMPT).build();
 		this.tools = tools;
 		this.jsonMapper = jsonMapper;
 		this.clock = clock;
 		this.properties = properties;
+		this.selectedChatModel = selectedChatModel;
 	}
 
 	public StockAnswer ask(String question) {
@@ -84,7 +87,7 @@ public class StockAgent {
 		List<ToolCallback> callbacks = new ArrayList<>();
 		try {
 			for (ToolCallback callback : tools.getToolCallbacks()) {
-				callbacks.add(new RecordingToolCallback(callback, records, jsonMapper));
+				callbacks.add(new RecordingToolCallback(callback, records, jsonMapper, selectedChatModel.label()));
 			}
 		}
 		catch (RuntimeException ex) {

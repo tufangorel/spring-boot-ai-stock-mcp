@@ -3,6 +3,8 @@ package org.example.stock.agent;
 import java.util.List;
 import java.util.function.Supplier;
 
+import org.apache.commons.logging.Log;
+import org.apache.commons.logging.LogFactory;
 import org.springframework.ai.chat.model.ToolContext;
 import org.springframework.ai.mcp.SyncMcpToolCallback;
 import org.springframework.ai.tool.ToolCallback;
@@ -17,16 +19,24 @@ import tools.jackson.databind.json.JsonMapper;
  */
 class RecordingToolCallback implements ToolCallback {
 
+	/** Arguments and results longer than this are cut, matching the MCP server's tool log. */
+	static final int MAX_PAYLOAD_CHARACTERS = 4000;
+
+	private static final Log logger = LogFactory.getLog(RecordingToolCallback.class);
+
 	private final ToolCallback delegate;
 
 	private final List<ToolCallRecord> records;
 
 	private final JsonMapper jsonMapper;
 
-	RecordingToolCallback(ToolCallback delegate, List<ToolCallRecord> records, JsonMapper jsonMapper) {
+	private final String model;
+
+	RecordingToolCallback(ToolCallback delegate, List<ToolCallRecord> records, JsonMapper jsonMapper, String model) {
 		this.delegate = delegate;
 		this.records = records;
 		this.jsonMapper = jsonMapper;
+		this.model = model;
 	}
 
 	@Override
@@ -57,16 +67,51 @@ class RecordingToolCallback implements ToolCallback {
 
 	private String record(String toolInput, Supplier<String> call) {
 		JsonNode arguments = ToolResults.unwrap(toolInput, jsonMapper);
+		long started = System.nanoTime();
 		String result;
 		try {
 			result = call.get();
 		}
 		catch (RuntimeException ex) {
 			records.add(new ToolCallRecord(toolName(), arguments, null, message(ex)));
+			logger.info(line("error", started, arguments, null, ex));
 			throw ex;
 		}
-		records.add(new ToolCallRecord(toolName(), arguments, ToolResults.unwrap(result, jsonMapper), null));
+		JsonNode unwrapped = ToolResults.unwrap(result, jsonMapper);
+		records.add(new ToolCallRecord(toolName(), arguments, unwrapped, null));
+		logger.info(line("success", started, arguments, unwrapped, null));
 		return result;
+	}
+
+	private String line(String outcome, long started, JsonNode arguments, JsonNode result, RuntimeException error) {
+		StringBuilder line = new StringBuilder("Agent MCP tool call ").append(toolName())
+				.append(" model=").append(model)
+				.append(" outcome=").append(outcome)
+				.append(" durationMs=").append((System.nanoTime() - started) / 1_000_000)
+				.append(" arguments=").append(cut(json(arguments)));
+		if (error == null) {
+			line.append(" result=").append(cut(json(result)));
+		}
+		else {
+			line.append(" error=").append(error.getClass().getSimpleName()).append(": ").append(cut(json(message(error))));
+		}
+		return line.toString();
+	}
+
+	private String json(JsonNode node) {
+		return node == null || node.isMissingNode() ? "null" : node.toString();
+	}
+
+	private String json(String text) {
+		return jsonMapper.writeValueAsString(text);
+	}
+
+	private static String cut(String json) {
+		if (json.length() <= MAX_PAYLOAD_CHARACTERS) {
+			return json;
+		}
+		return json.substring(0, MAX_PAYLOAD_CHARACTERS) + "... (" + (json.length() - MAX_PAYLOAD_CHARACTERS)
+				+ " more characters)";
 	}
 
 	/**

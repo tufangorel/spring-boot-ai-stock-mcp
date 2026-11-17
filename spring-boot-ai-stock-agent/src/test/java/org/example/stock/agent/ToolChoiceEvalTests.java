@@ -51,7 +51,7 @@ class ToolChoiceEvalTests {
 						.temperature(0.2)
 						.timeout(Duration.ofSeconds(60))
 						.build())
-				.build());
+				.build(), "openai/" + model("OPENAI_MODEL", "gpt-4o-mini"));
 
 		@Test
 		void looksUpACompanyNameBeforeQuotingIt() {
@@ -103,7 +103,7 @@ class ToolChoiceEvalTests {
 						.maxTokens(2048)
 						.timeout(Duration.ofSeconds(60))
 						.build())
-				.build());
+				.build(), "anthropic/" + model("ANTHROPIC_MODEL", "claude-haiku-4-5"));
 
 		@Test
 		void looksUpACompanyNameBeforeQuotingIt() {
@@ -209,9 +209,9 @@ class ToolChoiceEvalTests {
 		});
 	}
 
-	private static StockAgent agent(ChatModel model) {
+	private static StockAgent agent(ChatModel model, String label) {
 		return new StockAgent(ChatClient.builder(model), new EvalTools(), JsonMapper.builder().build(), CLOCK,
-				new StockAgentProperties(500));
+				new StockAgentProperties(500), new SelectedChatModel(label));
 	}
 
 	private static String model(String variable, String defaultModel) {

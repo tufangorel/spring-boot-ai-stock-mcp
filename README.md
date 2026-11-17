@@ -511,6 +511,46 @@ Nothing sends an alert. These are read by hand, or by a monitoring tool you add 
 The tests make no network calls:
 
 - **Server:** provider responses recorded from the live endpoints are replayed with `MockRestServiceServer`. The tests cover the mapping, the Yahoo fallback, the one provider retry, the cache, ticker normalization and market hours. An MCP test starts the server on a random port, connects with an MCP client, lists the tools and calls them. It also pins down the result format Spring AI's MCP client gives the agent, checks that each tool call is recorded as a timer and as a log line with its trace ID, and reads the health addresses. Further tests cover how provider requests are recorded for the `providers` health group, the tags of the `http.client.requests` timer, and the read timeout, against a local port that never answers.
-- **Agent:** a scripted `ChatModel` asks for tool calls and then answers, and fake tools stand in for the MCP server. The tests cover the structured response, the grounding warnings, the 400 and 502 responses and both model providers.
+- **Agent:** a scripted `ChatModel` asks for tool calls and then answers, and fake tools stand in for the MCP server. The tests cover the structured response, the grounding warnings, the 400 and 502 responses and both model providers. Whether a real model chooses the right tool is a separate check, described in [Tool-choice eval](#tool-choice-eval), and `./mvnw verify` does not run it.
 
 JaCoCo writes coverage reports to `target/site/jacoco` in each module.
+
+## Tool-choice eval
+
+The agent does not choose the tool in code. [`StockAgent.ask`](spring-boot-ai-stock-agent/src/main/java/org/example/stock/agent/StockAgent.java) passes `findSymbol`, `getQuote`, and `getHistory` to the chat model, and the model chooses from the system prompt and the tool descriptions.
+
+`./mvnw verify` does not check that choice. The agent tests use a scripted `ChatModel` that is told which tool to call, and the fake tools describe each tool with only its name. Those tests prove that a recorded tool call is copied into the response and that grounding warnings fire. They do not prove that a real model calls `getQuote` for a price, `getHistory` for a range, or `findSymbol` when the ticker is a company name.
+
+The eval asks both configured models the same questions and asserts the recorded tool name and arguments. The defaults are OpenAI `gpt-4o-mini` and Anthropic `claude-haiku-4-5`, both at temperature 0.2. `OPENAI_MODEL` and `ANTHROPIC_MODEL` override the names. Each provider runs only when its API key is set, and both run when both keys are set. The tools are in-test stand-ins with the same names, descriptions, and parameter names as the MCP server, and they return fixed sample JSON. No MCP server, TradingView, or Yahoo call is made. The answer text is not graded, and a passing run does not mean the model will call a tool for every future question.
+
+A failure means the prompt or a tool description led that model to the wrong tool on that run. It is a signal to run the eval again or to change that text. It is not a live price check, and it is not a gate on `mvn verify` or GitHub Actions.
+
+One server test compares [`tool-definitions.json`](spring-boot-ai-stock-agent/src/test/resources/eval/tool-definitions.json) with the `@McpTool` and `@McpToolParam` text. Changing a description fails the normal build until the fixture is updated, so the eval keeps showing the model the same text the MCP server publishes.
+
+### Sample questions
+
+The same questions and the same accepted calls are used for both models. A `findSymbol` call before the data tool is accepted where the case allows it.
+
+| Question | Accepted call |
+|----------|----------------|
+| Aselsan hissesi şu an kaç TL? | The first call is `findSymbol`. A later `getQuote`, if the model makes one, uses ASELS. |
+| ASELS fiyatı ne? | A `getQuote` call includes ASELS. |
+| ASELS ve THYAO fiyatı | The `getQuote` calls together include both ASELS and THYAO. |
+| THYAO son 1 ay | `getHistory` is called with symbol THYAO and range `1mo`. |
+| ASELS bugün 5 dakikalık | `getHistory` is called with symbol ASELS, range `1d`, and interval `5m`. |
+| What is the latest price of THYAO? | A `getQuote` call includes THYAO. |
+| Microsoft fiyatı ne kadar? | The call is `findSymbol` or `getQuote`, the argument refers to Microsoft, and it is not ASELS or THYAO. `getHistory` is not called. |
+
+### Running the eval
+
+Set `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, or both. A provider whose key is absent is skipped. Each question runs once per provider that has a key and spends that provider's API credit.
+
+```bash
+export OPENAI_API_KEY=sk-...
+export ANTHROPIC_API_KEY=sk-ant-...
+./mvnw -pl spring-boot-ai-stock-agent test -Peval
+```
+
+On Windows, set the keys with `$env:OPENAI_API_KEY="sk-..."` and `$env:ANTHROPIC_API_KEY="sk-ant-..."` and run `.\mvnw -pl spring-boot-ai-stock-agent test -Peval`.
+
+The `eval` profile is what includes the `eval` tag. A plain `./mvnw verify` leaves it out.

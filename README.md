@@ -10,22 +10,30 @@ The project has two Spring Boot applications:
 ```mermaid
 flowchart LR
     Client -->|"POST /api/stocks/ask"| Agent
+    Cursor["Cursor"] -->|"MCP Streamable HTTP /mcp"| Tools
+    ClaudeCode["Claude Code or other MCP client"] -->|"MCP Streamable HTTP /mcp"| Tools
     subgraph agentModule [spring-boot-ai-stock-agent port 8080]
-        Agent["StockAgent ChatClient"]
-        Recorder["RecordingToolCallback"]
-        Agent --> Recorder
+        Agent["StockAgent"]
+        Guard["QuestionGuard"]
+        Logger["ModelCallCostLogger one token line per model call"]
+        Recorder["RecordingToolCallback one tool log per MCP call"]
+        Agent --> Guard
+        Guard -->|rejected| Reject["HTTP 400"]
+        Guard -->|allowed| Logger
     end
-    Agent <-->|LLM API| LLM["OpenAI or Claude"]
+    Logger <-->|"LLM API, one call per round"| LLM["OpenAI or Claude"]
+    LLM -->|asks for a tool| Recorder
     Recorder -->|"MCP Streamable HTTP /mcp"| Tools
+    Agent -->|"StockAnswer JSON"| Client
     subgraph serverModule [spring-boot-ai-stock-mcp-server port 8081]
-        Tools["StockTools McpTool"]
+        Tools["StockTools"]
         Observer["ToolCallObserver span, log line and timer"]
-        Routing["QuoteService cache and fallback"]
+        Routing["QuoteService cache, retry and fallback"]
         Tools --> Observer
         Observer --> Routing
     end
-    Routing --> TV["TradingView scanner"]
-    Routing --> YF["Yahoo chart"]
+    Routing -->|"search and quotes"| TV["TradingView scanner"]
+    Routing -->|"history and quote fallback"| YF["Yahoo chart"]
     Observer -.->|"OTLP traces with the otel profile"| Jaeger["Jaeger UI port 16686"]
 ```
 
@@ -49,6 +57,7 @@ The dashed arrow is optional: the server sends its traces to Jaeger only when it
 - [Tool-Choice Eval](#tool-choice-eval)
 - [Prompt Injection Prevention](#prompt-injection-prevention)
 - [Stock Agent Model Tool Call Audit](#stock-agent-model-tool-call-audit)
+- [Stock Agent Model Call Token Cost](#stock-agent-model-call-token-cost)
 - [Building And Testing](#building-and-testing)
 
 ## Tech Stack
@@ -592,6 +601,32 @@ The audit is one INFO line in the agent application log, written by `RecordingTo
 
 The line is written with Apache Commons Logging (`org.apache.commons.logging`), the same API the MCP server uses in `ToolCallObserver`. `RecordingToolCallback` takes a `Log` from `LogFactory.getLog` and calls `info`, so the line is an INFO record on the agent console. Spring Boot routes that API to Logback, which is the logging implementation this application runs.
 
+## Stock Agent Model Call Token Cost
+
+Each call the agent makes to the chat model is one INFO line in the agent application log. A question usually takes several model calls, so it writes several lines. There is no line that adds those calls into one total for the question, and nothing is stored in a database. `StockAnswer` is unchanged.
+
+```mermaid
+flowchart TD
+    Request["POST /api/stocks/ask"] --> Ask["StockAgent.ask"]
+    Ask --> Logger["ModelCallCostLogger"]
+    Logger --> Provider["Chat model"]
+    Logger --> LogLine["One INFO line per model call: model, tools, tokens, cost"]
+    Logger --> Response["StockAnswer unchanged"]
+```
+
+```
+Agent model call model=openai/gpt-6.1-sol tools=findSymbol inputTokens=840 outputTokens=40 estimatedCostUsd=0.002080
+Agent model call model=anthropic/claude-fable-5-2 tools= inputTokens=900 outputTokens=60 estimatedCostUsd=0.009600
+```
+
+Spring AI asks the model once per round of its tool loop. A question where the model calls `findSymbol` and then `getQuote` writes three lines: one when the model chooses `findSymbol`, one when it chooses `getQuote`, and one when it writes the sentence. A known ticker that skips `findSymbol` writes two. The answer round has an empty `tools` value. These lines are separate from `Agent MCP tool call`, which is written when an MCP tool runs.
+
+`ModelCallCostLogger` wraps the OpenAI or Anthropic chat model and reads that response's input and output token counts. The model name is the one this process was started with, the same label `SelectedChatModel` builds from `AI_PROVIDER` and `OPENAI_MODEL` or `ANTHROPIC_MODEL`. The question is not on the line.
+
+The dollar amount is the input tokens times the input list price, plus the output tokens times the output list price. Only two configured model ids have a price: `gpt-6.1-sol` at $2 per million input tokens and $10 per million output tokens, and `claude-fable-5-2` at $8 and $40. Any other `OPENAI_MODEL` or `ANTHROPIC_MODEL` is still named, and the token counts are still logged, but `estimatedCostUsd` is left off the line. Cached-input and reasoning tokens are not part of the estimate. When the response does not report token counts, the counts are left blank and there is no cost. A question rejected before the model is called writes no line. A model call that fails before a response also writes no line, because there is no usage to read.
+
+The line uses Apache Commons Logging, the same API as the tool-call audit.
+
 ## Building And Testing
 
 ```bash
@@ -608,6 +643,6 @@ JaCoCo writes coverage reports to `target/site/jacoco` in each module. `./mvnw v
 | Module | What `./mvnw verify` runs | Line coverage | Branch coverage |
 |--------|---------------------------|---------------|-----------------|
 | `spring-boot-ai-stock-mcp-server` | Unit tests and the MCP client test | 99.5% | 99.4% |
-| `spring-boot-ai-stock-agent` | Unit tests and the Spring context tests. The `eval` tag is excluded. | 100% | 98.5% |
+| `spring-boot-ai-stock-agent` | Unit tests and the Spring context tests. The `eval` tag is excluded. | 100% | 97.6% |
 
 The HTML report in the same directory is where a missed line can be opened.

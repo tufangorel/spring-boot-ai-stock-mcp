@@ -94,12 +94,29 @@ class StockAgentTests {
 	}
 
 	@Test
-	void warnsWhenNoToolWasCalled() {
+	void answersOutsideTheRoleWithoutCallingTheModel() {
+		StockAnswer answer = agent.ask("Bugün hava nasıl?");
+
+		assertThat(answer.answer()).isEqualTo(StockAgent.OUT_OF_SCOPE);
+		assertThat(answer.quotes()).isEmpty();
+		assertThat(answer.histories()).isEmpty();
+		assertThat(answer.toolCalls()).isEmpty();
+		assertThat(answer.warnings()).isEmpty();
+		assertThat(answer.disclaimer()).isEqualTo(StockAnswer.DISCLAIMER);
+		assertThat(model.prompts()).isEmpty();
+	}
+
+	@Test
+	void replacesAnAnswerThatCalledNoTool() {
 		model.script(ScriptedChatModel.answer("ASELS yaklaşık 330,75 TL."));
 
-		assertThat(agent.ask(Samples.QUESTION).warnings()).containsExactly(
-				"No tool was called, so the answer is not based on market data.",
-				"The answer mentions 330,75, which is not in any tool result.");
+		StockAnswer answer = agent.ask(Samples.QUESTION);
+
+		assertThat(answer.answer()).isEqualTo(StockAgent.OUT_OF_SCOPE);
+		assertThat(answer.quotes()).isEmpty();
+		assertThat(answer.toolCalls()).isEmpty();
+		assertThat(answer.warnings()).isEmpty();
+		assertThat(model.prompts()).isNotEmpty();
 	}
 
 	@Test
@@ -114,6 +131,7 @@ class StockAgentTests {
 
 		StockAnswer answer = agent.ask("NOPE1 ve ASELS?");
 
+		assertThat(answer.answer()).isEqualTo("NOPE1 bulunamadı.");
 		assertThat(answer.quotes()).isEmpty();
 		assertThat(answer.toolCalls().get(1).error()).isEqualTo("Range \"2d\" is not supported.");
 		assertThat(answer.warnings()).containsExactly("The getHistory tool failed: Range \"2d\" is not supported.",
@@ -205,7 +223,9 @@ class StockAgentTests {
 
 	@Test
 	void reportsAnEmptyAnswerAsABadGateway() {
-		model.script(ScriptedChatModel.answer("  "), AssistantMessage.builder().build());
+		tools.returning("getQuote", Samples.QUOTES_JSON);
+		model.script(model.callTool("getQuote", "{\"symbols\":[\"ASELS\"]}"), ScriptedChatModel.answer("  "),
+				model.callTool("getQuote", "{\"symbols\":[\"ASELS\"]}"), ScriptedChatModel.answer("  "));
 
 		assertThatExceptionOfType(ResponseStatusException.class).isThrownBy(() -> agent.ask("ASELS?"))
 				.satisfies(ex -> assertThat(ex.getStatusCode()).isEqualTo(HttpStatus.BAD_GATEWAY))

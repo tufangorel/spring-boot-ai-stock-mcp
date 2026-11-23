@@ -98,6 +98,7 @@ class StockAgentIntegrationTests {
 
 	@Test
 	void explainsAModelFailure() throws Exception {
+		tools.returning("getQuote", Samples.QUOTES_JSON);
 		model.failWith(new IllegalStateException("401 Unauthorized"));
 
 		mockMvc.perform(post("/api/stocks/ask").contentType(MediaType.APPLICATION_JSON).content(README_REQUEST))

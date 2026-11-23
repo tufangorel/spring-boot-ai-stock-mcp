@@ -62,6 +62,7 @@ The dashed arrow is optional: the server sends its traces to Jaeger only when it
 - [Stock Agent Model Tool Call Audit](#stock-agent-model-tool-call-audit)
 - [Stock Agent Model Call Token Cost](#stock-agent-model-call-token-cost)
 - [Stock Agent Guardrail](#stock-agent-guardrail)
+- [Stock Agent Allowed MCP Tools List](#stock-agent-allowed-mcp-tools-list)
 - [Building And Testing](#building-and-testing)
 
 ## Tech Stack
@@ -178,6 +179,26 @@ On Windows, use `.\mvnw.cmd`. For OpenAI, set `$env:OPENAI_API_KEY="sk-..."` and
 
 The agent connects to the server on the first question, so it also starts while the server is down; questions then return 502 until the server is up.
 
+For one run, pass `AI_PROVIDER`, the API key, and the model name as JVM arguments. `spring-boot:run` starts the agent in its own process, so they belong in `spring-boot.run.jvmArguments`. In PowerShell, quote that whole argument.
+
+```bash
+./mvnw -pl spring-boot-ai-stock-agent spring-boot:run -Dspring-boot.run.jvmArguments="-DAI_PROVIDER=openai -DOPENAI_API_KEY=sk-... -DOPENAI_MODEL=gpt-6.1-sol"
+```
+
+```bash
+./mvnw -pl spring-boot-ai-stock-agent spring-boot:run -Dspring-boot.run.jvmArguments="-DAI_PROVIDER=anthropic -DANTHROPIC_API_KEY=sk-ant-... -DANTHROPIC_MODEL=claude-fable-5-2"
+```
+
+`./mvnw -pl spring-boot-ai-stock-agent package` writes `spring-boot-ai-stock-agent/target/spring-boot-ai-stock-agent-0.0.1-SNAPSHOT.jar`. The same three values are ordinary JVM arguments on `java -jar`:
+
+```bash
+java -DAI_PROVIDER=openai -DOPENAI_API_KEY=sk-... -DOPENAI_MODEL=gpt-6.1-sol -jar spring-boot-ai-stock-agent/target/spring-boot-ai-stock-agent-0.0.1-SNAPSHOT.jar
+```
+
+```bash
+java -DAI_PROVIDER=anthropic -DANTHROPIC_API_KEY=sk-ant-... -DANTHROPIC_MODEL=claude-fable-5-2 -jar spring-boot-ai-stock-agent/target/spring-boot-ai-stock-agent-0.0.1-SNAPSHOT.jar
+```
+
 | Variable | Default | Used by |
 |----------|---------|---------|
 | `AI_PROVIDER` | `openai` | agent: `openai` or `anthropic` |
@@ -243,7 +264,7 @@ A test in the agent module returns exactly this response, using the provider dat
 | Status | When |
 |--------|------|
 | 400 | The question is blank, longer than `stocks.max-question-characters` (500), or tries to change the agent's instructions |
-| 502 | The MCP server cannot be reached, the model call fails, or the model returns no answer |
+| 502 | The MCP server cannot be reached, it did not provide `findSymbol`, `getQuote`, or `getHistory`, the model call fails, or the model returns no answer |
 
 ## Keeping The Answer Honest
 
@@ -510,7 +531,7 @@ Nothing sends an alert. These are read by hand, or by a monitoring tool you add 
 
 ## Tool-Choice Eval
 
-The agent does not choose the tool in code. [`StockAgent.ask`](spring-boot-ai-stock-agent/src/main/java/org/example/stock/agent/StockAgent.java) passes `findSymbol`, `getQuote`, and `getHistory` to the chat model, and the model chooses from the system prompt and the tool descriptions.
+The agent does not choose the tool in code. [`StockAgent.ask`](spring-boot-ai-stock-agent/src/main/java/org/example/stock/agent/StockAgent.java) passes through only `findSymbol`, `getQuote`, and `getHistory`, and the model chooses from the system prompt and the tool descriptions.
 
 `./mvnw verify` does not check that choice. The agent tests use a scripted `ChatModel` that is told which tool to call, and the fake tools describe each tool with only its name. Those tests prove that a recorded tool call is copied into the response and that grounding warnings fire. They do not prove that a real model calls `getQuote` for a price, `getHistory` for a range, or `findSymbol` when the ticker is a company name.
 
@@ -659,6 +680,31 @@ flowchart TD
 
 A question that passes is still sent to the model. `Apple stock price` passes because of `stock` and `price`. If that call records no tool, the model's text is discarded and the same sentence is returned. A tool result that finds a symbol, a quote, or candles is kept. A looked-up ticker that is only in `notFound` is still reported with the model's text. A thrown model or MCP failure stays HTTP 502.
 
+## Stock Agent Allowed MCP Tools List
+
+After a question passes `StockCue`, the agent loads the MCP server's tools and keeps only `findSymbol`, `getQuote`, and `getHistory`. Any other name is left out, so the model is neither offered it nor able to run it. The comparison uses the name the MCP server gave the tool, so a client prefix does not let another tool through. One of the three is enough. The model is called with whichever of them the server provided.
+
+If none of the three remain, the agent returns HTTP 502 and does not call the model:
+
+```text
+The stock MCP server did not provide findSymbol, getQuote, or getHistory.
+```
+
+A question with no stock cue still returns the fixed Borsa Istanbul sentence before this list is loaded.
+
+```mermaid
+flowchart TD
+    Cue["StockCue, in role"] --> Load["Load MCP callbacks"]
+    Load --> Keep{"name is findSymbol, getQuote, or getHistory"}
+    Keep -->|yes| Allowed["Keep the callback"]
+    Keep -->|no| Drop["Leave it out"]
+    Allowed --> Any{"at least one allowed tool"}
+    Drop --> Any
+    Any -->|yes| Model["Pass the allowed tools to the model"]
+    Any -->|no| Reject["HTTP 502, model not called"]
+    Model --> Answer["Existing answer path"]
+```
+
 ## Building And Testing
 
 ```bash
@@ -675,6 +721,6 @@ JaCoCo writes coverage reports to `target/site/jacoco` in each module. `./mvnw v
 | Module | What `./mvnw verify` runs | Line coverage | Branch coverage |
 |--------|---------------------------|---------------|-----------------|
 | `spring-boot-ai-stock-mcp-server` | Unit tests and the MCP client test | 99.5% | 99.4% |
-| `spring-boot-ai-stock-agent` | Unit tests and the Spring context tests. The `eval` tag is excluded. | 100% | 97.2% |
+| `spring-boot-ai-stock-agent` | Unit tests and the Spring context tests. The `eval` tag is excluded. | 100% | 97.3% |
 
 The HTML report in the same directory is where a missed line can be opened.

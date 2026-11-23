@@ -9,6 +9,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.CopyOnWriteArrayList;
 
 import org.example.stock.agent.StockAnswer.HistorySummary;
@@ -34,6 +35,10 @@ public class StockAgent {
 	static final ZoneId ISTANBUL = ZoneId.of("Europe/Istanbul");
 
 	static final String OUT_OF_SCOPE = "I can only answer questions about stocks listed on Borsa Istanbul.";
+
+	static final String MISSING_TOOLS = "The stock MCP server did not provide findSymbol, getQuote, or getHistory.";
+
+	private static final Set<String> ALLOWED_TOOLS = Set.of("findSymbol", "getQuote", "getHistory");
 
 	static final String SYSTEM_PROMPT = """
 			You answer questions about stocks listed on Borsa Istanbul, using only the tools you are given.
@@ -95,12 +100,19 @@ public class StockAgent {
 		List<ToolCallback> callbacks = new ArrayList<>();
 		try {
 			for (ToolCallback callback : tools.getToolCallbacks()) {
-				callbacks.add(new RecordingToolCallback(callback, records, jsonMapper, selectedChatModel.label()));
+				RecordingToolCallback recording = new RecordingToolCallback(callback, records, jsonMapper,
+						selectedChatModel.label());
+				if (ALLOWED_TOOLS.contains(recording.toolName())) {
+					callbacks.add(recording);
+				}
 			}
 		}
 		catch (RuntimeException ex) {
 			throw new ResponseStatusException(HttpStatus.BAD_GATEWAY,
 					"The stock MCP server could not be reached: " + ex.getMessage(), ex);
+		}
+		if (callbacks.isEmpty()) {
+			throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, MISSING_TOOLS);
 		}
 		String answer;
 		try {

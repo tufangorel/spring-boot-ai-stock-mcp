@@ -6,20 +6,25 @@ import java.time.ZoneOffset;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.boot.test.system.CapturedOutput;
+import org.springframework.boot.test.system.OutputCaptureExtension;
 import org.springframework.boot.test.context.TestConfiguration;
 import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Primary;
 import org.springframework.http.MediaType;
 import org.springframework.test.web.servlet.MockMvc;
+import org.springframework.test.web.servlet.MvcResult;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.hamcrest.Matchers.containsString;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
@@ -27,6 +32,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 @SpringBootTest(properties = { "spring.ai.openai.api-key=test-key", "spring.ai.mcp.client.enabled=false",
 		"stocks.max-question-characters=40" })
 @AutoConfigureMockMvc
+@ExtendWith(OutputCaptureExtension.class)
 class StockAgentIntegrationTests {
 
 	static final String README_REQUEST = """
@@ -89,6 +95,37 @@ class StockAgentIntegrationTests {
 	}
 
 	@Test
+	void writesTheAskIdsOnTheModelAndToolLines(CapturedOutput output) throws Exception {
+		tools.returning("getQuote", Samples.QUOTES_JSON);
+		model.script(model.callTool("getQuote", "{\"symbols\":[\"ASELS\"]}"), ScriptedChatModel.answer(Samples.ANSWER));
+
+		MvcResult result = mockMvc.perform(post("/api/stocks/ask").contentType(MediaType.APPLICATION_JSON)
+						.content("{\"question\":\"ASELS fiyati\"}"))
+				.andExpect(status().isOk())
+				.andReturn();
+
+		String traceId = result.getResponse().getHeader(AskTraceIds.TRACE_HEADER);
+		String spanId = result.getResponse().getHeader(AskTraceIds.SPAN_HEADER);
+		assertThat(output).contains("Agent model call")
+				.contains("Agent MCP tool call getQuote")
+				.contains("traceId=" + traceId + " spanId=" + spanId);
+	}
+
+	@Test
+	void returnsIdsForARejectedQuestionWithoutALogLine(CapturedOutput output) throws Exception {
+		model.script();
+
+		mockMvc.perform(post("/api/stocks/ask").contentType(MediaType.APPLICATION_JSON)
+						.content("{\"question\":\"Bugün hava nasıl?\"}"))
+				.andExpect(status().isOk())
+				.andExpect(header().exists(AskTraceIds.TRACE_HEADER))
+				.andExpect(header().exists(AskTraceIds.SPAN_HEADER));
+
+		assertThat(output).doesNotContain("Agent model call").doesNotContain("Agent MCP tool call");
+		assertThat(model.prompts()).isEmpty();
+	}
+
+	@Test
 	void explainsATooLongQuestion() throws Exception {
 		mockMvc.perform(post("/api/stocks/ask").contentType(MediaType.APPLICATION_JSON)
 						.content("{\"question\":\"" + "x".repeat(41) + "\"}"))
@@ -110,6 +147,8 @@ class StockAgentIntegrationTests {
 	void publishesTheApiDescription() throws Exception {
 		mockMvc.perform(get("/v3/api-docs"))
 				.andExpect(status().isOk())
+				.andExpect(header().doesNotExist(AskTraceIds.TRACE_HEADER))
+				.andExpect(header().doesNotExist(AskTraceIds.SPAN_HEADER))
 				.andExpect(jsonPath("$.info.title").value("Spring Boot AI Stock Agent"))
 				.andExpect(jsonPath("$.paths['/api/stocks/ask'].post.summary").value("Ask a question about a stock"));
 	}
@@ -118,9 +157,14 @@ class StockAgentIntegrationTests {
 	static class Fakes {
 
 		@Bean
-		@Primary
 		ScriptedChatModel scriptedChatModel() {
 			return new ScriptedChatModel();
+		}
+
+		@Bean
+		@Primary
+		ModelCallCostLogger loggingModel(ScriptedChatModel scripted, SelectedChatModel selected) {
+			return new ModelCallCostLogger(scripted, selected);
 		}
 
 		@Bean

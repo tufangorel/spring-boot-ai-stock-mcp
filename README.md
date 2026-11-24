@@ -63,6 +63,7 @@ The dashed arrow is optional: the server sends its traces to Jaeger only when it
 - [Stock Agent Model Call Token Cost](#stock-agent-model-call-token-cost)
 - [Stock Agent Guardrail](#stock-agent-guardrail)
 - [Stock Agent Allowed MCP Tools List](#stock-agent-allowed-mcp-tools-list)
+- [Stock Agent Trace Id Header](#stock-agent-trace-id-header)
 - [Building And Testing](#building-and-testing)
 
 ## Tech Stack
@@ -705,6 +706,21 @@ flowchart TD
     Model --> Answer["Existing answer path"]
 ```
 
+## Stock Agent Trace Id Header
+
+Every `POST /api/stocks/ask` receives one trace id and one span id before the question is checked. The trace id names that ask. The span id names the ask span. Both are returned on the response as `X-Trace-Id` and `X-Span-Id`, including HTTP 400 and HTTP 502. A value sent by the caller under those names is ignored, and the response has no `X-Request-Id`.
+
+The trace id is 32 lowercase hex characters and the span id is 16. They are drawn with `SecureRandom`. The same pair is written on each `Agent model call` line and each `Agent MCP tool call` line for that ask. A rejected call, such as a question with no stock cue, still returns both headers and writes neither line. The ids are not sent to the model API or to the MCP server.
+
+```mermaid
+flowchart TD
+    Post["POST /api/stocks/ask"] --> Ids["Mint trace id and span id"]
+    Ids --> Headers["X-Trace-Id and X-Span-Id on the response"]
+    Ids --> Ask["StockAgent.ask"]
+    Ask --> Rejected["Rejected call: headers, no log line"]
+    Ask --> Logs["Model and tool log lines include traceId and spanId"]
+```
+
 ## Building And Testing
 
 ```bash
@@ -721,6 +737,6 @@ JaCoCo writes coverage reports to `target/site/jacoco` in each module. `./mvnw v
 | Module | What `./mvnw verify` runs | Line coverage | Branch coverage |
 |--------|---------------------------|---------------|-----------------|
 | `spring-boot-ai-stock-mcp-server` | Unit tests and the MCP client test | 99.5% | 99.4% |
-| `spring-boot-ai-stock-agent` | Unit tests and the Spring context tests. The `eval` tag is excluded. | 100% | 97.3% |
+| `spring-boot-ai-stock-agent` | Unit tests and the Spring context tests. The `eval` tag is excluded. | 100% | 96.9% |
 
 The HTML report in the same directory is where a missed line can be opened.

@@ -95,6 +95,7 @@ class RecordingToolCallback implements ToolCallback {
 		else {
 			line.append(" error=").append(error.getClass().getSimpleName()).append(": ").append(cut(json(message(error))));
 		}
+		AskTraceIds.append(line);
 		return line.toString();
 	}
 

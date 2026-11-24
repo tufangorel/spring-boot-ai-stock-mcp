@@ -84,6 +84,7 @@ class ModelCallCostLogger implements ChatModel {
 				line.append(" estimatedCostUsd=").append(cost.toPlainString());
 			}
 		}
+		AskTraceIds.append(line);
 		return line.toString();
 	}
 

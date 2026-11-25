@@ -211,7 +211,7 @@ class ToolChoiceEvalTests {
 
 	private static StockAgent agent(ChatModel model, String label) {
 		return new StockAgent(ChatClient.builder(model), new EvalTools(), JsonMapper.builder().build(), CLOCK,
-				new StockAgentProperties(500), new SelectedChatModel(label));
+				new StockAgentProperties(500, 10), new SelectedChatModel(label));
 	}
 
 	private static String model(String variable, String defaultModel) {

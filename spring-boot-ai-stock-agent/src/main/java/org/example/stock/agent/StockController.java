@@ -20,7 +20,7 @@ public class StockController {
 	}
 
 	@Operation(summary = "Ask a question about a stock",
-			description = "Returns the answer with the quotes, price histories, and tool calls it is based on, and warnings when the answer mentions a number that no tool returned. Returns 400 for a blank or too long question and 502 when the MCP server or the model fails.")
+			description = "Returns the answer with the quotes, price histories, and tool calls it is based on, and warnings when the answer mentions a number that no tool returned. Requires the X-User-Id header. Returns 400 for a missing user, a blank question, or a too long question, 429 when that user is over 10 questions in a minute, and 502 when the MCP server or the model fails.")
 	@PostMapping("/ask")
 	public StockAnswer ask(@Valid @RequestBody AskRequest request) {
 		return agent.ask(request.question());

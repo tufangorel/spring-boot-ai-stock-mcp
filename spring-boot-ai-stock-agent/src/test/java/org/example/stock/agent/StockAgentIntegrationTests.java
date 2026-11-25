@@ -86,7 +86,7 @@ class StockAgentIntegrationTests {
 		model.script(model.callTool("findSymbol", "{\"query\":\"Aselsan\"}"),
 				model.callTool("getQuote", "{\"symbols\":[\"ASELS\"]}"), ScriptedChatModel.answer(Samples.ANSWER));
 
-		mockMvc.perform(post("/api/stocks/ask").contentType(MediaType.APPLICATION_JSON).content(README_REQUEST))
+		mockMvc.perform(post("/api/stocks/ask").header(AskUserLimiter.USER_HEADER, "reader").contentType(MediaType.APPLICATION_JSON).content(README_REQUEST))
 				.andExpect(status().isOk())
 				.andExpect(content().json(README_RESPONSE, true));
 
@@ -99,7 +99,7 @@ class StockAgentIntegrationTests {
 		tools.returning("getQuote", Samples.QUOTES_JSON);
 		model.script(model.callTool("getQuote", "{\"symbols\":[\"ASELS\"]}"), ScriptedChatModel.answer(Samples.ANSWER));
 
-		MvcResult result = mockMvc.perform(post("/api/stocks/ask").contentType(MediaType.APPLICATION_JSON)
+		MvcResult result = mockMvc.perform(post("/api/stocks/ask").header(AskUserLimiter.USER_HEADER, "reader").contentType(MediaType.APPLICATION_JSON)
 						.content("{\"question\":\"ASELS fiyati\"}"))
 				.andExpect(status().isOk())
 				.andReturn();
@@ -115,7 +115,7 @@ class StockAgentIntegrationTests {
 	void returnsIdsForARejectedQuestionWithoutALogLine(CapturedOutput output) throws Exception {
 		model.script();
 
-		mockMvc.perform(post("/api/stocks/ask").contentType(MediaType.APPLICATION_JSON)
+		mockMvc.perform(post("/api/stocks/ask").header(AskUserLimiter.USER_HEADER, "reader").contentType(MediaType.APPLICATION_JSON)
 						.content("{\"question\":\"Bugün hava nasıl?\"}"))
 				.andExpect(status().isOk())
 				.andExpect(header().exists(AskTraceIds.TRACE_HEADER))
@@ -127,7 +127,7 @@ class StockAgentIntegrationTests {
 
 	@Test
 	void explainsATooLongQuestion() throws Exception {
-		mockMvc.perform(post("/api/stocks/ask").contentType(MediaType.APPLICATION_JSON)
+		mockMvc.perform(post("/api/stocks/ask").header(AskUserLimiter.USER_HEADER, "reader").contentType(MediaType.APPLICATION_JSON)
 						.content("{\"question\":\"" + "x".repeat(41) + "\"}"))
 				.andExpect(status().isBadRequest())
 				.andExpect(status().reason("The question has 41 characters; the limit is 40."));
@@ -138,7 +138,7 @@ class StockAgentIntegrationTests {
 		tools.returning("getQuote", Samples.QUOTES_JSON);
 		model.failWith(new IllegalStateException("401 Unauthorized"));
 
-		mockMvc.perform(post("/api/stocks/ask").contentType(MediaType.APPLICATION_JSON).content(README_REQUEST))
+		mockMvc.perform(post("/api/stocks/ask").header(AskUserLimiter.USER_HEADER, "reader").contentType(MediaType.APPLICATION_JSON).content(README_REQUEST))
 				.andExpect(status().isBadGateway())
 				.andExpect(status().reason(containsString("The model call failed: 401 Unauthorized")));
 	}

@@ -3,8 +3,12 @@ package org.example.stock.agent;
 import java.util.List;
 
 import org.junit.jupiter.api.Test;
+import java.time.Clock;
+
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.test.context.TestConfiguration;
 import org.springframework.boot.webmvc.test.autoconfigure.WebMvcTest;
+import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Import;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
@@ -22,7 +26,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 @WebMvcTest(StockController.class)
-@Import(AskTraceFilter.class)
+@Import({ AskTraceFilter.class, AskUserRateLimitFilter.class, AskUserLimiter.class, StockControllerTests.LimitConfig.class })
 class StockControllerTests {
 
 	@Autowired
@@ -36,7 +40,7 @@ class StockControllerTests {
 		given(agent.ask("ASELS?")).willReturn(new StockAnswer("330,75 TL", List.of(), List.of(), List.of(), List.of(),
 				StockAnswer.DISCLAIMER));
 
-		mockMvc.perform(post("/api/stocks/ask").contentType(MediaType.APPLICATION_JSON)
+		mockMvc.perform(post("/api/stocks/ask").header(AskUserLimiter.USER_HEADER, "reader").contentType(MediaType.APPLICATION_JSON)
 						.content("{\"question\":\"ASELS?\"}"))
 				.andExpect(status().isOk())
 				.andExpect(header().exists(AskTraceIds.TRACE_HEADER))
@@ -51,13 +55,13 @@ class StockControllerTests {
 		given(agent.ask("ASELS?")).willReturn(new StockAnswer("330,75 TL", List.of(), List.of(), List.of(), List.of(),
 				StockAnswer.DISCLAIMER));
 
-		MvcResult first = mockMvc.perform(post("/api/stocks/ask").contentType(MediaType.APPLICATION_JSON)
+		MvcResult first = mockMvc.perform(post("/api/stocks/ask").header(AskUserLimiter.USER_HEADER, "reader").contentType(MediaType.APPLICATION_JSON)
 						.header(AskTraceIds.TRACE_HEADER, "client-trace")
 						.header(AskTraceIds.SPAN_HEADER, "client-span")
 						.content("{\"question\":\"ASELS?\"}"))
 				.andExpect(status().isOk())
 				.andReturn();
-		MvcResult second = mockMvc.perform(post("/api/stocks/ask").contentType(MediaType.APPLICATION_JSON)
+		MvcResult second = mockMvc.perform(post("/api/stocks/ask").header(AskUserLimiter.USER_HEADER, "reader").contentType(MediaType.APPLICATION_JSON)
 						.content("{\"question\":\"ASELS?\"}"))
 				.andExpect(status().isOk())
 				.andReturn();
@@ -73,14 +77,29 @@ class StockControllerTests {
 
 	@Test
 	void rejectsABlankQuestion() throws Exception {
-		mockMvc.perform(post("/api/stocks/ask").contentType(MediaType.APPLICATION_JSON).content("{\"question\":\" \"}"))
+		mockMvc.perform(post("/api/stocks/ask").header(AskUserLimiter.USER_HEADER, "reader").contentType(MediaType.APPLICATION_JSON).content("{\"question\":\" \"}"))
 				.andExpect(status().isBadRequest())
 				.andExpect(header().exists(AskTraceIds.TRACE_HEADER))
 				.andExpect(header().exists(AskTraceIds.SPAN_HEADER));
-		mockMvc.perform(post("/api/stocks/ask").contentType(MediaType.APPLICATION_JSON).content("{}"))
+		mockMvc.perform(post("/api/stocks/ask").header(AskUserLimiter.USER_HEADER, "reader").contentType(MediaType.APPLICATION_JSON).content("{}"))
 				.andExpect(status().isBadRequest());
 
 		verifyNoInteractions(agent);
+	}
+
+	@TestConfiguration
+	static class LimitConfig {
+
+		@Bean
+		Clock clock() {
+			return Clock.systemUTC();
+		}
+
+		@Bean
+		StockAgentProperties stockAgentProperties() {
+			return new StockAgentProperties(500, 10);
+		}
+
 	}
 
 	@Test
@@ -88,9 +107,9 @@ class StockControllerTests {
 		given(agent.ask("long")).willThrow(new ResponseStatusException(HttpStatus.BAD_REQUEST, "too long"));
 		given(agent.ask("down")).willThrow(new ResponseStatusException(HttpStatus.BAD_GATEWAY, "unreachable"));
 
-		mockMvc.perform(post("/api/stocks/ask").contentType(MediaType.APPLICATION_JSON).content("{\"question\":\"long\"}"))
+		mockMvc.perform(post("/api/stocks/ask").header(AskUserLimiter.USER_HEADER, "reader").contentType(MediaType.APPLICATION_JSON).content("{\"question\":\"long\"}"))
 				.andExpect(status().isBadRequest());
-		mockMvc.perform(post("/api/stocks/ask").contentType(MediaType.APPLICATION_JSON).content("{\"question\":\"down\"}"))
+		mockMvc.perform(post("/api/stocks/ask").header(AskUserLimiter.USER_HEADER, "reader").contentType(MediaType.APPLICATION_JSON).content("{\"question\":\"down\"}"))
 				.andExpect(status().isBadGateway())
 				.andExpect(header().exists(AskTraceIds.TRACE_HEADER))
 				.andExpect(header().exists(AskTraceIds.SPAN_HEADER));

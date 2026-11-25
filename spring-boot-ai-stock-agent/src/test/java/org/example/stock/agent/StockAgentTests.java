@@ -33,7 +33,7 @@ class StockAgentTests {
 	private final FakeTools tools = new FakeTools();
 
 	private final StockAgent agent = new StockAgent(ChatClient.builder(model), tools, JsonMapper.builder().build(),
-			CLOCK, new StockAgentProperties(50), new SelectedChatModel("scripted/test"));
+			CLOCK, new StockAgentProperties(50, 10), new SelectedChatModel("scripted/test"));
 
 	@Test
 	void answersWithTheQuotesTheToolsReturned() {
@@ -239,7 +239,7 @@ class StockAgentTests {
 	void reportsAnUnreachableMcpServerAsABadGateway() {
 		StockAgent unreachable = new StockAgent(ChatClient.builder(model), () -> {
 			throw new IllegalStateException("Connection refused");
-		}, JsonMapper.builder().build(), CLOCK, new StockAgentProperties(50), new SelectedChatModel("scripted/test"));
+		}, JsonMapper.builder().build(), CLOCK, new StockAgentProperties(50, 10), new SelectedChatModel("scripted/test"));
 
 		assertThatExceptionOfType(ResponseStatusException.class).isThrownBy(() -> unreachable.ask("ASELS?"))
 				.satisfies(ex -> assertThat(ex.getStatusCode()).isEqualTo(HttpStatus.BAD_GATEWAY))

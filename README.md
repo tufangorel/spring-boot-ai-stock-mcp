@@ -4,7 +4,7 @@ Ask a question about a Borsa Istanbul stock in plain language, in Turkish or Eng
 
 The project has two Spring Boot applications:
 
-- `**spring-boot-ai-stock-mcp-server**` is an [MCP](https://modelcontextprotocol.io) server. It offers three tools, `findSymbol`, `getQuote` and `getHistory`, over Streamable HTTP. It fetches the data from TradingView and Yahoo Finance. It records every tool call with its arguments and result as a trace span, a log line and a timer, and can send the traces to Jaeger with OpenTelemetry (see [Observability](#observability)). It also reports its own health and whether TradingView and Yahoo are answering (see [Health Endpoints Implementation for MCP Stock Server](#health-endpoints-implementation-for-mcp-stock-server)).
+- `**spring-boot-ai-stock-mcp-server**` is an [MCP](https://modelcontextprotocol.io) server. It offers three tools, `findSymbol`, `getQuote` and `getHistory`, over Streamable HTTP. It fetches the data from TradingView and Yahoo Finance. It records every tool call with its arguments and result as a trace span, a log line and a timer, and can send the traces to Jaeger with OpenTelemetry (see [MCP Server Observability](#mcp-server-observability)). It also reports its own health and whether TradingView and Yahoo are answering (see [Health Endpoints Implementation for MCP Stock Server](#health-endpoints-implementation-for-mcp-stock-server)).
 - `**spring-boot-ai-stock-agent**` is a REST API. Its endpoint, `POST /api/stocks/ask`, takes a natural-language sentence as input, such as "Aselsan hissesi şu an kaç TL?", and redirects the request to `spring-boot-ai-stock-mcp-server`. It does this through an LLM (OpenAI or Anthropic) and Spring AI's `ChatClient`: the model reads the sentence, decides which of the server's tools to call, and the agent forwards those calls to the server over MCP. The model then writes the answer, and the API returns it together with the tool data as JSON.
 
 ```mermaid
@@ -53,7 +53,7 @@ The dashed arrow is optional: the server sends its traces to Jaeger only when it
 - [Limits](#limits)
 - [Stock Data Provider Retry Mechanism Implementation](#stock-data-provider-retry-mechanism-implementation)
 - [Using The MCP Server From Cursor](#using-the-mcp-server-from-cursor)
-- [Observability](#observability)
+- [MCP Server Observability](#mcp-server-observability)
 - [How The MCP Server And Jaeger Connect](#how-the-mcp-server-and-jaeger-connect)
 - [Health Endpoints Implementation for MCP Stock Server](#health-endpoints-implementation-for-mcp-stock-server)
 - [Checking The Stock Data Providers](#checking-the-stock-data-providers)
@@ -65,6 +65,7 @@ The dashed arrow is optional: the server sends its traces to Jaeger only when it
 - [Stock Agent Allowed MCP Tools List](#stock-agent-allowed-mcp-tools-list)
 - [Stock Agent Trace Id Header](#stock-agent-trace-id-header)
 - [Stock Agent User Rate Limit](#stock-agent-user-rate-limit)
+- [Stock Agent Observability](#stock-agent-observability)
 - [Building And Testing](#building-and-testing)
 
 ## Tech Stack
@@ -101,8 +102,8 @@ The dashed arrow is optional: the server sends its traces to Jaeger only when it
 
 - **Spring Boot Actuator**: health, liveness, readiness, info and metrics endpoints
 - **Micrometer 1.17.1**: the Observation API and the timers
-- **Micrometer Tracing 1.7.1** with its OpenTelemetry bridge, and **OpenTelemetry 1.62.0** (SDK and OTLP exporter) for the traces
-- **Jaeger 2** (optional, tried with 2.23.0) to view the traces
+- **Micrometer Tracing 1.7.1** with its OpenTelemetry bridge, and **OpenTelemetry 1.62.0** (SDK and OTLP exporter) for the traces from the MCP server and the stock agent. `spring-boot-starter-opentelemetry` is the version Spring Boot brings in.
+- **Jaeger 2** (optional, tried with 2.23.0) to view the traces from both applications
 - **Logback** for the log lines, which carry the trace ID
 
 **Testing and quality**
@@ -209,7 +210,7 @@ java -DAI_PROVIDER=anthropic -DANTHROPIC_API_KEY=sk-ant-... -DANTHROPIC_MODEL=cl
 | `ANTHROPIC_API_KEY`, `ANTHROPIC_MODEL` | `claude-fable-5-2` | agent |
 | `STOCK_MCP_URL` | `http://localhost:8081` | agent: where the MCP server is |
 | `PORT` | `8080` for the agent, `8081` for the server | both |
-| `SPRING_PROFILES_ACTIVE` | none | server: `otel` sends traces to Jaeger (see [Observability](#observability)) |
+| `SPRING_PROFILES_ACTIVE` | none | agent and server: `otel` sends traces to Jaeger (see [MCP Server Observability](#mcp-server-observability) and [Stock Agent Observability](#stock-agent-observability)) |
 | `STOCKS_RECORD_TOOL_PAYLOADS` | `true` | server: whether tool arguments and results are recorded |
 | `STOCKS_MAX_PAYLOAD_CHARACTERS` | `4000` | server: where recorded arguments and results are cut |
 
@@ -384,7 +385,7 @@ A successful retry is invisible in the tool result: the tool returns the same JS
 
 Start the server, open this folder in Cursor, and turn the server on under Cursor Settings, MCP. Cursor's agent can then call `findSymbol`, `getQuote` and `getHistory` directly.
 
-## Observability
+## MCP Server Observability
 
 The MCP server records every tool call, so you can see what a client asked for and what it got back. Each call to `findSymbol`, `getQuote` or `getHistory` produces three things:
 
@@ -778,6 +779,77 @@ flowchart TD
     Controller --> Agent["StockAgent.ask"]
 ```
 
+## Stock Agent Observability
+
+The agent exports the same way as the MCP server. Spans exist as soon as the application starts. They are sent to Jaeger only when the agent is started with the `otel` profile, which reads [`application-otel.properties`](spring-boot-ai-stock-agent/src/main/resources/application-otel.properties) and posts traces to `http://localhost:4318/v1/traces`. Metrics stay on the Actuator endpoint. Jaeger shows the traces at `http://localhost:16686` under the service name `spring-boot-ai-stock-agent`.
+
+`X-Trace-Id` and `X-Span-Id` on the response are the MVC span for that ask. A value sent by the caller under those names, as a header, a query parameter, or a JSON field, is ignored. An incoming W3C `traceparent` is continued, and the response `X-Trace-Id` is that trace. Each model call and each agent tool call is a child span. The response `X-Span-Id` stays the ask span, while the model and tool log lines use their own child span id. The MCP HTTP call carries `traceparent` for the current span and does not carry `X-Trace-Id`. The server `tools/call` span joins the ask when the server is also started with the `otel` profile. OpenAI and Anthropic do not continue the trace. `X-User-Id` is a span attribute on the ask span. A missing user and HTTP 429 still have that span.
+
+```mermaid
+flowchart TD
+    Ask["POST /api/stocks/ask"] --> AgentSpan["Agent span in Jaeger"]
+    AgentSpan --> ModelSpan["Model call span"]
+    AgentSpan --> ToolSpan["Agent tool span"]
+    ToolSpan -->|"traceparent"| Mcp["POST /mcp"]
+    Mcp --> ServerSpan["Server tools/call span"]
+    AgentSpan --> Jaeger["Jaeger port 16686"]
+    ServerSpan --> Jaeger
+```
+
+This is one ask in Jaeger. `POST /api/stocks/ask` was sent with `X-User-Id: ada` and the question `ASELS fiyati`. No OpenAI API key was set, so the agent returned HTTP 502 and the model call ended with HTTP 401 before any stock tool ran. The trace still shows the path that did run.
+
+Trace `cb6364f866b92f17cb355933b252e47a` lasts 2.7 seconds and has 10 spans across both services. The response headers were `X-Trace-Id: cb6364f866b92f17cb355933b252e47a` and `X-Span-Id: de6b8a339bd22330`. The root span is `http post /api/stocks/ask` on `spring-boot-ai-stock-agent`, with `X-User-Id=ada` and status 502. Under it are three `http post /mcp` spans on `spring-boot-ai-stock-mcp-server` from the MCP session setup, then `spring_ai chat_client`, `agent model call`, and `chat gpt-6.1-sol`, which ends in the 401. There is no `getQuote` span, because the model never chose a tool.
+
+Start the agent with the `otel` profile and the model settings in one command:
+
+```bash
+java -DAI_PROVIDER=openai -DOPENAI_API_KEY=sk-... -DOPENAI_MODEL=gpt-6.1-sol -jar spring-boot-ai-stock-agent/target/spring-boot-ai-stock-agent-0.0.1-SNAPSHOT.jar --spring.profiles.active=otel
+```
+
+The call that produced this trace:
+
+```bash
+curl -X POST http://localhost:8080/api/stocks/ask \
+  -H "Content-Type: application/json" \
+  -H "X-User-Id: ada" \
+  -d '{ "question": "ASELS fiyati" }'
+```
+
+Request:
+
+```http
+POST /api/stocks/ask HTTP/1.1
+Host: localhost:8080
+Content-Type: application/json
+X-User-Id: ada
+```
+
+```json
+{ "question": "ASELS fiyati" }
+```
+
+Response:
+
+```http
+HTTP/1.1 502
+X-Trace-Id: cb6364f866b92f17cb355933b252e47a
+X-Span-Id: de6b8a339bd22330
+Content-Type: application/json
+Date: Thu, 26 Nov 2026 08:17:15 GMT
+```
+
+```json
+{
+  "timestamp": "2026-11-26T08:17:15.349Z",
+  "status": 502,
+  "error": "Bad Gateway",
+  "message": "The model call failed: 401: You didn't provide an API key. You need to provide your API key in an Authorization header using Bearer auth (i.e. Authorization: Bearer YOUR_KEY), or as the password field (with blank username) if you're accessing the API from your browser and are prompted for a username and password. You can obtain an API key from https://platform.openai.com/account/api-keys.",
+  "path": "/api/stocks/ask"
+}
+```
+
+![An ask in the Jaeger UI, with the agent span, the MCP session, and the model call that returned 401](docs/jaeger-agent-ask-trace.png)
+
 ## Building And Testing
 
 ```bash
@@ -794,6 +866,6 @@ JaCoCo writes coverage reports to `target/site/jacoco` in each module. `./mvnw v
 | Module | What `./mvnw verify` runs | Line coverage | Branch coverage |
 |--------|---------------------------|---------------|-----------------|
 | `spring-boot-ai-stock-mcp-server` | Unit tests and the MCP client test | 99.5% | 99.4% |
-| `spring-boot-ai-stock-agent` | Unit tests and the Spring context tests. The `eval` tag is excluded. | 100% | 97.5% |
+| `spring-boot-ai-stock-agent` | Unit tests and the Spring context tests. The `eval` tag is excluded. | 100% | 97.7% |
 
 The HTML report in the same directory is where a missed line can be opened.

@@ -15,6 +15,8 @@ import java.util.concurrent.CopyOnWriteArrayList;
 import org.example.stock.agent.StockAnswer.HistorySummary;
 import org.example.stock.agent.StockAnswer.Quote;
 import org.example.stock.agent.StockAnswer.ToolCall;
+import io.micrometer.observation.ObservationRegistry;
+import io.micrometer.tracing.Tracer;
 import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.ai.tool.ToolCallback;
 import org.springframework.ai.tool.ToolCallbackProvider;
@@ -73,14 +75,21 @@ public class StockAgent {
 
 	private final SelectedChatModel selectedChatModel;
 
+	private final ObservationRegistry observations;
+
+	private final Tracer tracer;
+
 	public StockAgent(ChatClient.Builder chatClientBuilder, ToolCallbackProvider tools, JsonMapper jsonMapper,
-			Clock clock, StockAgentProperties properties, SelectedChatModel selectedChatModel) {
+			Clock clock, StockAgentProperties properties, SelectedChatModel selectedChatModel,
+			ObservationRegistry observations, Tracer tracer) {
 		this.chatClient = chatClientBuilder.defaultSystem(SYSTEM_PROMPT).build();
 		this.tools = tools;
 		this.jsonMapper = jsonMapper;
 		this.clock = clock;
 		this.properties = properties;
 		this.selectedChatModel = selectedChatModel;
+		this.observations = observations;
+		this.tracer = tracer;
 	}
 
 	public StockAnswer ask(String question) {
@@ -101,7 +110,7 @@ public class StockAgent {
 		try {
 			for (ToolCallback callback : tools.getToolCallbacks()) {
 				RecordingToolCallback recording = new RecordingToolCallback(callback, records, jsonMapper,
-						selectedChatModel.label());
+						selectedChatModel.label(), observations, tracer);
 				if (ALLOWED_TOOLS.contains(recording.toolName())) {
 					callbacks.add(recording);
 				}

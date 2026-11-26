@@ -1,5 +1,7 @@
 package org.example.stock.agent;
 
+import io.micrometer.observation.ObservationRegistry;
+import io.micrometer.tracing.Tracer;
 import java.time.Clock;
 import java.time.Instant;
 import java.time.ZoneOffset;
@@ -33,7 +35,8 @@ class StockAgentTests {
 	private final FakeTools tools = new FakeTools();
 
 	private final StockAgent agent = new StockAgent(ChatClient.builder(model), tools, JsonMapper.builder().build(),
-			CLOCK, new StockAgentProperties(50, 10), new SelectedChatModel("scripted/test"));
+			CLOCK, new StockAgentProperties(50, 10), new SelectedChatModel("scripted/test"),
+			ObservationRegistry.NOOP, Tracer.NOOP);
 
 	@Test
 	void answersWithTheQuotesTheToolsReturned() {
@@ -239,7 +242,8 @@ class StockAgentTests {
 	void reportsAnUnreachableMcpServerAsABadGateway() {
 		StockAgent unreachable = new StockAgent(ChatClient.builder(model), () -> {
 			throw new IllegalStateException("Connection refused");
-		}, JsonMapper.builder().build(), CLOCK, new StockAgentProperties(50, 10), new SelectedChatModel("scripted/test"));
+		}, JsonMapper.builder().build(), CLOCK, new StockAgentProperties(50, 10), new SelectedChatModel("scripted/test"),
+				ObservationRegistry.NOOP, Tracer.NOOP);
 
 		assertThatExceptionOfType(ResponseStatusException.class).isThrownBy(() -> unreachable.ask("ASELS?"))
 				.satisfies(ex -> assertThat(ex.getStatusCode()).isEqualTo(HttpStatus.BAD_GATEWAY))

@@ -1,5 +1,7 @@
 package org.example.stock.agent;
 
+import io.micrometer.observation.ObservationRegistry;
+import io.micrometer.tracing.Tracer;
 import java.time.Clock;
 import java.time.Instant;
 import java.time.ZoneOffset;
@@ -108,7 +110,8 @@ class StockAgentIntegrationTests {
 		String spanId = result.getResponse().getHeader(AskTraceIds.SPAN_HEADER);
 		assertThat(output).contains("Agent model call")
 				.contains("Agent MCP tool call getQuote")
-				.contains("traceId=" + traceId + " spanId=" + spanId);
+				.contains("traceId=" + traceId)
+				.doesNotContain("spanId=" + spanId);
 	}
 
 	@Test
@@ -163,8 +166,9 @@ class StockAgentIntegrationTests {
 
 		@Bean
 		@Primary
-		ModelCallCostLogger loggingModel(ScriptedChatModel scripted, SelectedChatModel selected) {
-			return new ModelCallCostLogger(scripted, selected);
+		ModelCallCostLogger loggingModel(ScriptedChatModel scripted, SelectedChatModel selected,
+				ObservationRegistry observations, Tracer tracer) {
+			return new ModelCallCostLogger(scripted, selected, observations, tracer);
 		}
 
 		@Bean

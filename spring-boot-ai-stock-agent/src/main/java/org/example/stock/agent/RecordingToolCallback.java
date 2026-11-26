@@ -3,6 +3,9 @@ package org.example.stock.agent;
 import java.util.List;
 import java.util.function.Supplier;
 
+import io.micrometer.observation.Observation;
+import io.micrometer.observation.ObservationRegistry;
+import io.micrometer.tracing.Tracer;
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
 import org.springframework.ai.chat.model.ToolContext;
@@ -32,11 +35,22 @@ class RecordingToolCallback implements ToolCallback {
 
 	private final String model;
 
+	private final ObservationRegistry observations;
+
+	private final Tracer tracer;
+
 	RecordingToolCallback(ToolCallback delegate, List<ToolCallRecord> records, JsonMapper jsonMapper, String model) {
+		this(delegate, records, jsonMapper, model, ObservationRegistry.NOOP, Tracer.NOOP);
+	}
+
+	RecordingToolCallback(ToolCallback delegate, List<ToolCallRecord> records, JsonMapper jsonMapper, String model,
+			ObservationRegistry observations, Tracer tracer) {
 		this.delegate = delegate;
 		this.records = records;
 		this.jsonMapper = jsonMapper;
 		this.model = model;
+		this.observations = observations;
+		this.tracer = tracer;
 	}
 
 	@Override
@@ -67,20 +81,31 @@ class RecordingToolCallback implements ToolCallback {
 
 	private String record(String toolInput, Supplier<String> call) {
 		JsonNode arguments = ToolResults.unwrap(toolInput, jsonMapper);
+		Observation observation = Observation.createNotStarted("agent.tool.call", observations)
+				.contextualName("agent tool " + toolName())
+				.highCardinalityKeyValue("tool", toolName());
+		observation.start();
 		long started = System.nanoTime();
-		String result;
-		try {
-			result = call.get();
+		try (Observation.Scope scope = observation.openScope()) {
+			String result;
+			try {
+				result = call.get();
+			}
+			catch (RuntimeException ex) {
+				observation.highCardinalityKeyValue("outcome", "error").error(ex);
+				records.add(new ToolCallRecord(toolName(), arguments, null, message(ex)));
+				logger.info(line("error", started, arguments, null, ex));
+				throw ex;
+			}
+			observation.highCardinalityKeyValue("outcome", "success");
+			JsonNode unwrapped = ToolResults.unwrap(result, jsonMapper);
+			records.add(new ToolCallRecord(toolName(), arguments, unwrapped, null));
+			logger.info(line("success", started, arguments, unwrapped, null));
+			return result;
 		}
-		catch (RuntimeException ex) {
-			records.add(new ToolCallRecord(toolName(), arguments, null, message(ex)));
-			logger.info(line("error", started, arguments, null, ex));
-			throw ex;
+		finally {
+			observation.stop();
 		}
-		JsonNode unwrapped = ToolResults.unwrap(result, jsonMapper);
-		records.add(new ToolCallRecord(toolName(), arguments, unwrapped, null));
-		logger.info(line("success", started, arguments, unwrapped, null));
-		return result;
 	}
 
 	private String line(String outcome, long started, JsonNode arguments, JsonNode result, RuntimeException error) {
@@ -95,7 +120,7 @@ class RecordingToolCallback implements ToolCallback {
 		else {
 			line.append(" error=").append(error.getClass().getSimpleName()).append(": ").append(cut(json(message(error))));
 		}
-		AskTraceIds.append(line);
+		AskTraceIds.append(line, tracer);
 		return line.toString();
 	}
 

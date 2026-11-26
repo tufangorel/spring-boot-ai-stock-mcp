@@ -6,6 +6,9 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 
+import io.micrometer.observation.Observation;
+import io.micrometer.observation.ObservationRegistry;
+import io.micrometer.tracing.Tracer;
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
 import org.springframework.ai.chat.messages.AssistantMessage;
@@ -36,9 +39,16 @@ class ModelCallCostLogger implements ChatModel {
 
 	private final SelectedChatModel selectedChatModel;
 
-	ModelCallCostLogger(ChatModel delegate, SelectedChatModel selectedChatModel) {
+	private final ObservationRegistry observations;
+
+	private final Tracer tracer;
+
+	ModelCallCostLogger(ChatModel delegate, SelectedChatModel selectedChatModel, ObservationRegistry observations,
+			Tracer tracer) {
 		this.delegate = delegate;
 		this.selectedChatModel = selectedChatModel;
+		this.observations = observations;
+		this.tracer = tracer;
 	}
 
 	ChatModel delegate() {
@@ -47,11 +57,23 @@ class ModelCallCostLogger implements ChatModel {
 
 	@Override
 	public ChatResponse call(Prompt prompt) {
-		ChatResponse response = delegate.call(prompt);
-		if (response != null) {
-			logger.info(line(response));
+		Observation observation = Observation.createNotStarted("agent.model.call", observations)
+				.contextualName("agent model call");
+		observation.start();
+		try (Observation.Scope scope = observation.openScope()) {
+			ChatResponse response = delegate.call(prompt);
+			if (response != null) {
+				logger.info(line(response));
+			}
+			return response;
 		}
-		return response;
+		catch (RuntimeException ex) {
+			observation.error(ex);
+			throw ex;
+		}
+		finally {
+			observation.stop();
+		}
 	}
 
 	@Override
@@ -84,7 +106,7 @@ class ModelCallCostLogger implements ChatModel {
 				line.append(" estimatedCostUsd=").append(cost.toPlainString());
 			}
 		}
-		AskTraceIds.append(line);
+		AskTraceIds.append(line, tracer);
 		return line.toString();
 	}
 

@@ -1,56 +1,41 @@
 package org.example.stock.agent;
 
 import java.lang.reflect.Constructor;
-import java.util.Arrays;
-import java.util.Random;
 
-import org.junit.jupiter.api.AfterEach;
+import io.micrometer.tracing.Span;
+import io.micrometer.tracing.Tracer;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 
 class AskTraceIdsTests {
 
-	@AfterEach
-	void close() {
-		AskTraceIds.close();
-	}
-
 	@Test
-	void mintsLowercaseHexAndClearsIt() {
-		AskTraceIds.Ids first = AskTraceIds.open();
-		AskTraceIds.Ids second = AskTraceIds.open();
-
-		assertThat(first.traceId()).hasSize(32).matches("[0-9a-f]+");
-		assertThat(first.spanId()).hasSize(16).matches("[0-9a-f]+");
-		assertThat(second.traceId()).isNotEqualTo(first.traceId());
-		assertThat(AskTraceIds.current()).isEqualTo(second);
+	void appendsTheCurrentSpanAndSkipsAMissingOne() {
+		Span span = mock(Span.class);
+		io.micrometer.tracing.TraceContext context = mock(io.micrometer.tracing.TraceContext.class);
+		when(span.isNoop()).thenReturn(false);
+		when(span.context()).thenReturn(context);
+		when(context.traceId()).thenReturn("4bf92f3577b34da6a3ce929d0e0e4736");
+		when(context.spanId()).thenReturn("00f067aa0ba902b7");
+		Tracer tracer = mock(Tracer.class);
+		when(tracer.currentSpan()).thenReturn(span);
 
 		StringBuilder line = new StringBuilder("Agent model call");
-		AskTraceIds.append(line);
-		assertThat(line).hasToString("Agent model call traceId=" + second.traceId() + " spanId=" + second.spanId());
+		AskTraceIds.append(line, tracer);
+		assertThat(line).hasToString(
+				"Agent model call traceId=4bf92f3577b34da6a3ce929d0e0e4736 spanId=00f067aa0ba902b7");
 
-		AskTraceIds.close();
+		when(tracer.currentSpan()).thenReturn(Span.NOOP);
 		StringBuilder quiet = new StringBuilder("Agent model call");
-		AskTraceIds.append(quiet);
+		AskTraceIds.append(quiet, tracer);
 		assertThat(quiet).hasToString("Agent model call");
-		assertThat(AskTraceIds.current()).isNull();
-	}
+		assertThat(AskTraceIds.present(null)).isFalse();
 
-	@Test
-	void drawsAgainWhenTheBytesAreAllZero() {
-		Random zerosThenOnes = new Random() {
-			private int calls;
-
-			@Override
-			public void nextBytes(byte[] bytes) {
-				Arrays.fill(bytes, (byte) (calls++ == 0 ? 0 : 1));
-			}
-		};
-
-		assertThat(AskTraceIds.allZero(new byte[] { 0, 0 })).isTrue();
-		assertThat(AskTraceIds.allZero(new byte[] { 0, 1 })).isFalse();
-		assertThat(AskTraceIds.hex(2, zerosThenOnes)).isEqualTo("0101");
+		when(context.traceId()).thenReturn("   ");
+		assertThat(AskTraceIds.present(span)).isFalse();
 	}
 
 	@Test

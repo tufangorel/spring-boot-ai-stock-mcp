@@ -1,5 +1,7 @@
 package org.example.stock.agent;
 
+import io.micrometer.observation.ObservationRegistry;
+import io.micrometer.tracing.Tracer;
 import java.util.List;
 
 import org.junit.jupiter.api.Test;
@@ -127,7 +129,7 @@ class ModelCallCostLoggerTests {
 	}
 
 	private static ModelCallCostLogger logger(String label, ChatModel delegate) {
-		return new ModelCallCostLogger(delegate, new SelectedChatModel(label));
+		return new ModelCallCostLogger(delegate, new SelectedChatModel(label), ObservationRegistry.NOOP, Tracer.NOOP);
 	}
 
 	private static ChatResponse response(AssistantMessage message, Usage usage) {

@@ -26,7 +26,8 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 @WebMvcTest(StockController.class)
-@Import({ AskTraceFilter.class, AskUserRateLimitFilter.class, AskUserLimiter.class, StockControllerTests.LimitConfig.class })
+@Import({ AskTraceFilter.class, AskUserRateLimitFilter.class, AskUserLimiter.class, StockControllerTests.LimitConfig.class,
+		TestAskTracing.class })
 class StockControllerTests {
 
 	@Autowired

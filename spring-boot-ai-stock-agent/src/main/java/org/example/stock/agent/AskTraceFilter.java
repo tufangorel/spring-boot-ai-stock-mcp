@@ -2,6 +2,7 @@ package org.example.stock.agent;
 
 import java.io.IOException;
 
+import io.micrometer.tracing.Tracer;
 import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServletRequest;
@@ -12,12 +13,18 @@ import org.springframework.stereotype.Component;
 import org.springframework.web.filter.OncePerRequestFilter;
 
 /**
- * Mints the ask trace id and span id before anything else handles {@code POST /api/stocks/ask}, including a rejection.
- * The ids are on the response even when no model or tool log line is written.
+ * Copies the MVC ask span onto the response after the server observation has started, including a rejection. A value
+ * sent by the caller as {@code X-Trace-Id} or {@code X-Span-Id} is ignored.
  */
 @Component
-@Order(Ordered.HIGHEST_PRECEDENCE)
+@Order(Ordered.HIGHEST_PRECEDENCE + 2)
 class AskTraceFilter extends OncePerRequestFilter {
+
+	private final Tracer tracer;
+
+	AskTraceFilter(Tracer tracer) {
+		this.tracer = tracer;
+	}
 
 	@Override
 	protected boolean shouldNotFilter(HttpServletRequest request) {
@@ -27,15 +34,8 @@ class AskTraceFilter extends OncePerRequestFilter {
 	@Override
 	protected void doFilterInternal(HttpServletRequest request, HttpServletResponse response, FilterChain filterChain)
 			throws ServletException, IOException {
-		AskTraceIds.Ids ids = AskTraceIds.open();
-		response.setHeader(AskTraceIds.TRACE_HEADER, ids.traceId());
-		response.setHeader(AskTraceIds.SPAN_HEADER, ids.spanId());
-		try {
-			filterChain.doFilter(request, response);
-		}
-		finally {
-			AskTraceIds.close();
-		}
+		AskTraceIds.write(response, tracer.currentSpan());
+		filterChain.doFilter(request, response);
 	}
 
 }

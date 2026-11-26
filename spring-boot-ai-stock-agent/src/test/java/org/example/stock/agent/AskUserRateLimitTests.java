@@ -29,7 +29,8 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 @WebMvcTest(StockController.class)
-@Import({ AskTraceFilter.class, AskUserRateLimitFilter.class, AskUserLimiter.class, AskUserRateLimitTests.ClockConfig.class })
+@Import({ AskTraceFilter.class, AskUserRateLimitFilter.class, AskUserLimiter.class, AskUserRateLimitTests.ClockConfig.class,
+		TestAskTracing.class })
 class AskUserRateLimitTests {
 
 	private static final AskUserLimiterTests.MutableClock CLOCK = new AskUserLimiterTests.MutableClock(

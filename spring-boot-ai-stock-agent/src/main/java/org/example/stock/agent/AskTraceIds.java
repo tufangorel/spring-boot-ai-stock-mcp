@@ -1,12 +1,12 @@
 package org.example.stock.agent;
 
-import java.security.SecureRandom;
-import java.util.HexFormat;
-import java.util.Random;
+import io.micrometer.tracing.Span;
+import io.micrometer.tracing.Tracer;
+import jakarta.servlet.http.HttpServletResponse;
 
 /**
- * One trace id and one span id for the ask that is running on this thread. The values are minted here until the agent
- * exports OpenTelemetry spans. A caller-supplied id is never read.
+ * Reads the current OpenTelemetry span. The response headers are the MVC ask span. A log line written inside a child
+ * span uses that child span. A caller-supplied id is never read.
  */
 final class AskTraceIds {
 
@@ -14,54 +14,27 @@ final class AskTraceIds {
 
 	static final String SPAN_HEADER = "X-Span-Id";
 
-	private static final SecureRandom RANDOM = new SecureRandom();
-
-	private static final ThreadLocal<Ids> CURRENT = new ThreadLocal<>();
-
 	private AskTraceIds() {
 	}
 
-	record Ids(String traceId, String spanId) {
-	}
-
-	static Ids open() {
-		Ids ids = new Ids(hex(16, RANDOM), hex(8, RANDOM));
-		CURRENT.set(ids);
-		return ids;
-	}
-
-	static void close() {
-		CURRENT.remove();
-	}
-
-	static Ids current() {
-		return CURRENT.get();
-	}
-
-	static void append(StringBuilder line) {
-		Ids ids = CURRENT.get();
-		if (ids == null) {
+	static void write(HttpServletResponse response, Span span) {
+		if (!present(span)) {
 			return;
 		}
-		line.append(" traceId=").append(ids.traceId()).append(" spanId=").append(ids.spanId());
+		response.setHeader(TRACE_HEADER, span.context().traceId());
+		response.setHeader(SPAN_HEADER, span.context().spanId());
 	}
 
-	static String hex(int size, Random random) {
-		byte[] bytes = new byte[size];
-		do {
-			random.nextBytes(bytes);
+	static void append(StringBuilder line, Tracer tracer) {
+		Span span = tracer.currentSpan();
+		if (!present(span)) {
+			return;
 		}
-		while (allZero(bytes));
-		return HexFormat.of().formatHex(bytes);
+		line.append(" traceId=").append(span.context().traceId()).append(" spanId=").append(span.context().spanId());
 	}
 
-	static boolean allZero(byte[] bytes) {
-		for (byte value : bytes) {
-			if (value != 0) {
-				return false;
-			}
-		}
-		return true;
+	static boolean present(Span span) {
+		return span != null && !span.isNoop() && !span.context().traceId().isBlank();
 	}
 
 }

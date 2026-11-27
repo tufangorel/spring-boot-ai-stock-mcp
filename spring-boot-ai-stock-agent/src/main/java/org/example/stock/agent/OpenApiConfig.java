@@ -12,7 +12,7 @@ public class OpenApiConfig {
 	public OpenAPI stockOpenApi() {
 		return new OpenAPI().info(new Info()
 				.title("Spring Boot AI Stock Agent")
-				.description("Ask a question about Borsa Istanbul stocks in plain language and get an answer with the delayed quotes and price histories it is based on. Market data comes from the stock MCP server. This is not investment advice.")
+				.description("Ask a question about Borsa Istanbul stocks in English or Turkish and get an answer with the delayed quotes and price histories it is based on. Market data comes from the stock MCP server. This is not investment advice.")
 				.version("0.0.1"));
 	}
 

@@ -4,10 +4,14 @@ import java.lang.reflect.Constructor;
 
 import io.micrometer.tracing.Span;
 import io.micrometer.tracing.Tracer;
+import jakarta.servlet.http.HttpServletResponse;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 class AskTraceIdsTests {
@@ -36,6 +40,10 @@ class AskTraceIdsTests {
 
 		when(context.traceId()).thenReturn("   ");
 		assertThat(AskTraceIds.present(span)).isFalse();
+
+		HttpServletResponse response = mock(HttpServletResponse.class);
+		AskTraceIds.write(response, Span.NOOP);
+		verify(response, never()).setHeader(any(), any());
 	}
 
 	@Test

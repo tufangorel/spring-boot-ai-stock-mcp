@@ -80,7 +80,7 @@ class AskOtelTests {
 						.header(AskTraceIds.TRACE_HEADER, "client-trace")
 						.header(AskTraceIds.SPAN_HEADER, "client-span")
 						.contentType(MediaType.APPLICATION_JSON)
-						.content("{\"question\":\"ASELS?\",\"X-Trace-Id\":\"client-trace\",\"X-Span-Id\":\"client-span\"}"))
+						.content("{\"question\":\"What is the ASELS price?\",\"X-Trace-Id\":\"client-trace\",\"X-Span-Id\":\"client-span\"}"))
 				.andExpect(status().isOk())
 				.andReturn();
 		assertThat(supplied.getResponse().getHeader(AskTraceIds.TRACE_HEADER)).isNotEqualTo("client-trace");
@@ -90,7 +90,7 @@ class AskOtelTests {
 		model.script(ScriptedChatModel.answer(Samples.ANSWER));
 		MvcResult continued = mockMvc.perform(post("/api/stocks/ask").header(AskUserLimiter.USER_HEADER, "cara")
 						.header(McpTracePropagation.TRACEPARENT, PARENT)
-						.contentType(MediaType.APPLICATION_JSON).content("{\"question\":\"ASELS?\"}"))
+						.contentType(MediaType.APPLICATION_JSON).content("{\"question\":\"What is the ASELS price?\"}"))
 				.andExpect(status().isOk())
 				.andReturn();
 		assertThat(continued.getResponse().getHeader(AskTraceIds.TRACE_HEADER))

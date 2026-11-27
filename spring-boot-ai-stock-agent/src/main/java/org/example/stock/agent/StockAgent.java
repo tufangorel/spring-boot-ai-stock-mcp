@@ -102,6 +102,7 @@ public class StockAgent {
 					+ " characters; the limit is " + properties.maxQuestionCharacters() + ".");
 		}
 		QuestionGuard.reject(text);
+		QuestionLanguage.reject(text);
 		if (!StockCue.inRole(text)) {
 			return outOfScope();
 		}

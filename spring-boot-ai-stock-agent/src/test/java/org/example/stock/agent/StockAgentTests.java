@@ -239,13 +239,25 @@ class StockAgentTests {
 	}
 
 	@Test
+	void rejectsAQuestionThatIsNotEnglishOrTurkishWithoutCallingTheModel() {
+		assertThatExceptionOfType(ResponseStatusException.class).isThrownBy(() -> agent.ask("ASELS?"))
+				.satisfies(ex -> assertThat(ex.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST))
+				.withMessageContaining(QuestionLanguage.REJECTION);
+		assertThatExceptionOfType(ResponseStatusException.class)
+				.isThrownBy(() -> agent.ask("ما هو سعر ASELS؟"))
+				.satisfies(ex -> assertThat(ex.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST))
+				.withMessageContaining(QuestionLanguage.REJECTION);
+		assertThat(model.prompts()).isEmpty();
+	}
+
+	@Test
 	void reportsAnUnreachableMcpServerAsABadGateway() {
 		StockAgent unreachable = new StockAgent(ChatClient.builder(model), () -> {
 			throw new IllegalStateException("Connection refused");
 		}, JsonMapper.builder().build(), CLOCK, new StockAgentProperties(50, 10), new SelectedChatModel("scripted/test"),
 				ObservationRegistry.NOOP, Tracer.NOOP);
 
-		assertThatExceptionOfType(ResponseStatusException.class).isThrownBy(() -> unreachable.ask("ASELS?"))
+		assertThatExceptionOfType(ResponseStatusException.class).isThrownBy(() -> unreachable.ask("ASELS fiyatı?"))
 				.satisfies(ex -> assertThat(ex.getStatusCode()).isEqualTo(HttpStatus.BAD_GATEWAY))
 				.withMessageContaining("The stock MCP server could not be reached: Connection refused");
 		assertThat(model.prompts()).isEmpty();
@@ -256,7 +268,7 @@ class StockAgentTests {
 		tools.returning("getQuote", Samples.QUOTES_JSON);
 		model.failWith(new IllegalStateException("401 Unauthorized"));
 
-		assertThatExceptionOfType(ResponseStatusException.class).isThrownBy(() -> agent.ask("ASELS?"))
+		assertThatExceptionOfType(ResponseStatusException.class).isThrownBy(() -> agent.ask("ASELS fiyatı?"))
 				.satisfies(ex -> assertThat(ex.getStatusCode()).isEqualTo(HttpStatus.BAD_GATEWAY))
 				.withMessageContaining("The model call failed: 401 Unauthorized");
 	}
@@ -267,10 +279,10 @@ class StockAgentTests {
 		model.script(model.callTool("getQuote", "{\"symbols\":[\"ASELS\"]}"), ScriptedChatModel.answer("  "),
 				model.callTool("getQuote", "{\"symbols\":[\"ASELS\"]}"), ScriptedChatModel.answer("  "));
 
-		assertThatExceptionOfType(ResponseStatusException.class).isThrownBy(() -> agent.ask("ASELS?"))
+		assertThatExceptionOfType(ResponseStatusException.class).isThrownBy(() -> agent.ask("ASELS fiyatı?"))
 				.satisfies(ex -> assertThat(ex.getStatusCode()).isEqualTo(HttpStatus.BAD_GATEWAY))
 				.withMessageContaining("The model returned an empty answer.");
-		assertThatExceptionOfType(ResponseStatusException.class).isThrownBy(() -> agent.ask("ASELS?"))
+		assertThatExceptionOfType(ResponseStatusException.class).isThrownBy(() -> agent.ask("ASELS fiyatı?"))
 				.withMessageContaining("The model returned an empty answer.");
 	}
 

@@ -1,0 +1,13 @@
+---
+description: Required stages for every new feature plan and implementation
+alwaysApply: true
+---
+
+# Feature implementation
+
+When designing or implementing a new feature in this repo:
+
+1. Check out `main`, pull from origin, then create a new feature branch from that updated `main`. Do not continue the work on an existing feature branch. This repository uses `main`.
+2. Add unit tests and integration tests for the change. `./mvnw verify` is the run that counts (the `eval` tag stays excluded). Cover every new line and branch. Agent line coverage from that run stays 100%.
+3. After that verify, replace the coverage table in the Building And Testing section of README.md with the totals from each module's `target/site/jacoco/jacoco.csv`. Use an HTML table. A coverage cell at 100% has a green background. A coverage cell under 100% has an amber background. Leave the module name and the description of what verify runs uncolored.
+4. Do not commit, push, or open a pull request until asked.

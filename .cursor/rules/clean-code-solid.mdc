@@ -1,0 +1,15 @@
+---
+description: Clean Code, KISS, YAGNI, DRY, SOLID, and ACID are required before any implementation
+alwaysApply: true
+---
+
+# Clean Code, KISS, YAGNI, DRY, SOLID, and ACID
+
+Apply these before writing or changing code. A change that breaks one of them is not ready to implement.
+
+- Clean Code. Name classes, methods, and variables for what they do. Keep methods small and on one level of abstraction. Do not leave commented-out code or unused code.
+- KISS. Use the simplest design that meets the requirement.
+- YAGNI. Do not add a type, a setting, or a branch the current feature does not use.
+- DRY. Keep one copy of a check, a message, or a mapping. Call it instead of pasting it.
+- SOLID. One class changes for one reason. Extend by a new type and leave passing behavior in place. A substitute honors the contract it replaces. Depend on the small interface the caller uses. High-level flow such as `StockAgent.ask` depends on abstractions already in this codebase, not on a concrete client.
+- ACID. A change that writes stored state commits as one unit, leaves that state consistent, stays isolated from a concurrent update, and is durable across a restart when durability is required. The in-memory rate-limit map is not durable. Do not describe it as an ACID store.

@@ -1,0 +1,15 @@
+---
+description: High-Level Architectural Guidelines required before any implementation
+alwaysApply: true
+---
+
+# High-Level Architectural Guidelines
+
+Apply these before writing or changing code.
+
+- Centralize Configuration. Keep constants and configuration settings in one high-level location, such as `application.properties` and the existing properties type. Do not scatter a new limit or a new message through callers.
+- Follow Consistent Rules. Follow the conventions already in this repo for naming, packages, constructor injection, and the other always-on rules. A new file matches its neighbors.
+- Use Polymorphism Over Conditional Logic. A new variant, such as another provider or another tool behavior, is its own type. Do not grow an `if` or `switch` chain to select that variant.
+- Separate Multi-Threaded Logic. Keep code that starts threads, shares mutable state, or synchronizes in one place. The request flow that calls it stays free of that locking.
+- Keep Abstraction Levels Separate. A high-level method, such as `StockAgent.ask`, orchestrates. Parsing, HTTP calls, and span attributes stay in the type that owns that detail.
+- Use Local Variables for Temporary Data. A value that lives for one request is a local variable or a helper created for that request. Do not store it on a shared instance field.

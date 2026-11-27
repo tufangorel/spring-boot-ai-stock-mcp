@@ -1,0 +1,12 @@
+---
+description: Constructor injection is required for Spring beans
+alwaysApply: true
+---
+
+# Constructor injection
+
+Prefer constructor injection for every new or changed Spring bean.
+
+- Take dependencies as constructor parameters and assign them to `final` fields.
+- Do not add `@Autowired` on a field or on a setter.
+- A single constructor needs no `@Autowired`. Tests build the object with `new` and pass the dependencies in, as `StockAgent` tests already do.

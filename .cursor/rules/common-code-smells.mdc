@@ -1,0 +1,15 @@
+---
+description: Common Code Smells to Avoid before any implementation
+alwaysApply: true
+---
+
+# Common Code Smells to Avoid
+
+Apply these before writing or changing code.
+
+- Singleton Overuse. Use constructor injection. Do not add a singleton to reach a dependency that the caller can pass in.
+- Base Classes Depending on Subclasses. A parent type works without knowing a specific child. Do not call back into a subclass to finish the parent's job.
+- Feature Envy. A method uses its own type's data. Move a method that mostly reads or calls another type onto that type.
+- Unused Dependencies. Remove an unused import, an unused constructor parameter, and a library the code no longer calls.
+- Hidden Coupling. A caller must not rely on an undocumented call order. Pass the values the method needs, or name the sequence in one place.
+- Transitive Navigation (Law of Demeter). A class talks to its direct dependencies. Do not chain through a neighbor's internals, such as `client.getTransport().getClient().send(...)`.
